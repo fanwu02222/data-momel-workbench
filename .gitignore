@@ -1,0 +1,14 @@
+# 用户数据（模型数据存 SQLite，快照含个人项目内容，均不入库）
+workbench.db
+workbench.db-shm
+workbench.db-wal
+project.json
+
+# 运行时产物
+*.log
+.playwright-cli/
+node_modules/
+
+# 系统文件
+.DS_Store
+Thumbs.db
