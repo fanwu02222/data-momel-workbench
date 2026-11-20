@@ -29,6 +29,7 @@ node server.js          # 启动本地服务（默认 http://127.0.0.1:8130，�
 | SQL 脚本 | 按依赖拓扑排序生成 Hive/SparkSQL、MySQL、ClickHouse、PostgreSQL 四种方言的 DDL + ETL DML，支持单模型/全量、复制与下载；**生成模板可自定义编辑**（见下方「SQL 模板」） |
 | SQL 反解析 | 粘贴 `CREATE TABLE`（注释/分区）、`CTAS`、`INSERT INTO/OVERWRITE ... SELECT`，自动解析为模型：字段、类型、注释、分区、源表映射、表达式、WHERE/GROUP BY、按前缀归层；预览后选择导入或覆盖同名模型 |
 | 规范校验 | 表名重复/前缀与分层不一致/字段缺注释/非 ODS 层缺源表映射/血缘断裂/循环依赖，逐条可定位 |
+| Excel 导出 | 一键导出数据字典 .xlsx（零依赖，真 OpenXML）：总览 + 每模型字段表（含分区标记与自定义列）+ 表级血缘清单，首行冻结、自适应列宽 |
 | DSH 任务 | 把复杂工作交给 DSH：补注释、深度规范审查出报告、生成数据字典、批量反解析 sql/ 目录、设计 ETL 调度方案 |
 
 ## 数据文件：project.json
@@ -95,7 +96,9 @@ js/app.js           布局、侧栏、页签、SQL 预览、全局变更监听
 server.js           本地服务：静态文件 + SQLite API + DSH headless 代理
 workbench.db        SQLite 数据库（数据源，首次运行自动创建）
 project.json        自动导出的数据快照（DSH/文件工作流用）
+js/xlsx-export.js   Excel 导出（零依赖 OpenXML：CRC32 + stored ZIP + SpreadsheetML）
 js/sample.js        示例项目数据
 test/test.js        解析/生成/血缘测试套件
+test/xlsx-export-test.js  Excel 导出测试（Node 生成 + Python zip/XML 深度校验）
 test/server-roundtrip.js  服务端 PUT 回环测试（node test/server-roundtrip.js）
 ```
