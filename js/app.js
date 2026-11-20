@@ -258,6 +258,7 @@
       Dialogs.toast('已导出 Excel 数据字典（' + (size / 1024).toFixed(1) + ' KB，' + n + ' 个模型）');
     };
     document.getElementById('btn-import-json').onclick = Dialogs.importJSON;
+    document.getElementById('btn-import-excel').onclick = Dialogs.importExcel;
     document.getElementById('btn-sample').onclick = function () {
       Dialogs.openModal('加载示例项目', (function () {
         var w = document.createElement('div');

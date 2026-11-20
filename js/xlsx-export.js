@@ -180,38 +180,45 @@
 
   function overviewSheet(project) {
     var modelCols = (project.customCols && project.customCols.model) || [];
-    var head = ['序号', '分层', '表名', '中文名', '描述', '源系统', '字段数', '分区', '源表', 'WHERE', 'GROUP BY']
+    var head = ['序号', '分层', '表名', '中文名', '描述', '源系统', '逻辑说明', '字段数', '分区', 'WHERE', 'GROUP BY']
       .concat(modelCols.map(function (c) { return c.label; }));
     var rows = [head.map(h)];
-    var byId = {};
-    (project.models || []).forEach(function (m) { byId[m.id] = m; });
-    // 按拓扑序输出
-    var order = [];
-    var visited = {};
-    (function visit(m) {
-      if (visited[m.id]) return;
-      visited[m.id] = true;
-      (m.sources || []).forEach(function (s) {
-        var up = s.name && byId[s.name] && s.name !== m.name ? byId[s.name] : null;
-        if (up && !visited[up.id]) visit(up);
-      });
-      order.push(m);
-    })(project.models[0] || { id: '__none__', sources: [] });
-    if (order.length && order[0].id === '__none__') order = [];
-    (project.models || []).forEach(function (m) { if (!visited[m.id]) order.push(m); });
-
-    order.forEach(function (m, i) {
+    (project.models || []).forEach(function (m, i) {
       rows.push([
         num(i + 1),
         t(String(m.layer || '').toUpperCase()),
-        t(m.name), t(m.cnName || ''), t(m.desc || ''), t(m.source || ''),
+        t(m.name), t(m.cnName || ''), t(m.desc || ''), t(m.source || ''), t(m.notes || ''),
         num((m.fields || []).length),
         t((m.partition || []).map(function (p) { return p.name; }).join(', ')),
-        t((m.sources || []).map(function (s) { return s.name + (s.alias ? '(' + s.alias + ')' : ''); }).join(', ')),
         t(m.where || ''), t(m.groupBy || '')
       ].concat(modelCols.map(function (c) { return t(m[c.key] || ''); })));
     });
-    return { rows: rows, widths: [6, 7, 26, 20, 36, 26, 8, 12, 30, 24, 20].concat(modelCols.map(function () { return 14; })) };
+    return { rows: rows, widths: [6, 7, 26, 20, 36, 26, 36, 8, 12, 24, 20].concat(modelCols.map(function () { return 14; })) };
+  }
+
+  // 配置 sheet：让 Excel 自包含，可完整回导
+  function configSheet(project) {
+    var cc = project.customCols || {};
+    var rows = [
+      [h('配置项'), h('值')],
+      [t('项目名'), t(project.name || '')],
+      [t('方言'), t(project.dialect || 'hive')],
+      [t('表级自定义列'), t(JSON.stringify(cc.model || []))],
+      [t('字段级自定义列'), t(JSON.stringify(cc.field || []))]
+    ];
+    return { rows: rows, widths: [18, 70] };
+  }
+
+  // 源表映射 sheet：一行一条映射（含 JOIN 条件），导入时按目标表聚合还原
+  function sourceSheet(project) {
+    var rows = [['目标表', '源表', '别名', 'JOIN 条件'].map(h)];
+    (project.models || []).forEach(function (m) {
+      (m.sources || []).forEach(function (s) {
+        if (!s.name) return;
+        rows.push([t(m.name), t(s.name), t(s.alias || ''), t(s.on || '')]);
+      });
+    });
+    return { rows: rows, widths: [28, 28, 14, 60] };
   }
 
   function modelSheet(m) {
@@ -228,7 +235,7 @@
     (m.partition || []).forEach(function (p) {
       i++;
       rows.push([num(i), t(p.name), t(p.type), t(p.comment || ''), '',
-        t(p.expr || ''), '分区'].concat(fieldCols.map(function (c) { return t(p[c.key] || ''); })));
+        t(p.expr || ''), t('分区')].concat(fieldCols.map(function (c) { return t(p[c.key] || ''); })));
     });
     return {
       rows: rows,
@@ -264,14 +271,20 @@
   // ---------- 主入口 ----------
   function buildWorkbook(project) {
     var used = {};
+    var cfg = configSheet(project);
     var ov = overviewSheet(project);
-    var sheets = [{ name: '总览', xml: sheetXml(ov.rows, ov.widths) }];
+    var sheets = [
+      { name: '配置', xml: sheetXml(cfg.rows, cfg.widths) },
+      { name: '总览', xml: sheetXml(ov.rows, ov.widths) }
+    ];
     (project.models || []).forEach(function (m) {
       var copy = Object.assign({}, m, { _fieldCols: (project.customCols && project.customCols.field) || [] });
       var s = modelSheet(copy);
       sheets.push({ name: safeSheetName(m.name, used), xml: sheetXml(s.rows, s.widths) });
     });
     var lin = lineageSheet(project);
+    var src = sourceSheet(project);
+    sheets.push({ name: '源表映射', xml: sheetXml(src.rows, src.widths) });
     sheets.push({ name: '血缘清单', xml: sheetXml(lin.rows, lin.widths) });
 
     var files = [];

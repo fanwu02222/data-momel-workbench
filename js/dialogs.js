@@ -489,6 +489,57 @@
     openModal(scopeName + ' · 自定义列', wrap);
   }
 
+  // ================= Excel 导入 =================
+  function importExcel() {
+    var mode = 'merge';
+    var wrap = el('div', 'import-dialog');
+    wrap.appendChild(el('p', 'hint',
+      '选择本工作台导出的 <span class="mono">.xlsx</span> 数据字典导入。两种模式：<br>' +
+      '<b>合并导入</b>——Excel 里的模型按表名覆盖/追加，其余保持不变（推荐，可从同事处合并数据）；<br>' +
+      '<b>替换整库</b>——用 Excel 完整重建项目（当前所有模型会被清除）。'));
+    var bar = el('div', 'form-grid');
+    bar.style.marginTop = '8px';
+    bar.innerHTML =
+      '<label>导入模式<select id="ie-mode"><option value="merge">合并导入（推荐）</option><option value="replace">替换整库</option></select></label>' +
+      '<label>Excel 文件<input type="file" id="ie-file" accept=".xlsx"></label>';
+    wrap.appendChild(bar);
+    var statusBox = el('div', 'hint');
+    wrap.appendChild(statusBox);
+    var startBtn = el('button', 'btn primary');
+    startBtn.textContent = '开始导入';
+    startBtn.onclick = function () {
+      var fileInput = wrap.querySelector('#ie-file');
+      var f = fileInput.files && fileInput.files[0];
+      if (!f) { toast('请先选择 .xlsx 文件', true); return; }
+      if (f.size > 20 * 1024 * 1024) { toast('文件超过 20MB 上限', true); return; }
+      var useMode = wrap.querySelector('#ie-mode').value;
+      statusBox.textContent = '导入中…';
+      startBtn.disabled = true;
+      fetch('/api/import/excel?mode=' + useMode, { method: 'POST', body: f })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d.error) { statusBox.textContent = '导入失败：' + d.error; toast('导入失败：' + d.error, true); return; }
+          Store.project = d.project;
+          Store.normalize();
+          Store.selectedId = Store.project.models.length ? Store.project.models[0].id : null;
+          Store.touch();
+          if (useMode === 'merge') Store.saveToServer().catch(function () { });
+          closeModal();
+          App.refresh();
+          var desc = [];
+          if (d.added && d.added.length) desc.push('新增 ' + d.added.length);
+          if (d.updated && d.updated.length) desc.push('更新 ' + d.updated.length);
+          toast('Excel 导入完成：' + (desc.join('、') || '共 ' + d.total + ' 个模型'));
+        })
+        .catch(function (e) {
+          startBtn.disabled = false;
+          statusBox.textContent = '导入失败：' + e.message;
+          toast('导入失败：' + e.message + '（需通过 node server.js 启动）', true);
+        });
+    };
+    openModal('导入 Excel 数据字典', wrap, [startBtn]);
+  }
+
   // ================= JSON 导入导出 =================
   function exportJSON() {
     var blob = new Blob([JSON.stringify(Store.project, null, 2)], { type: 'application/json' });
@@ -530,6 +581,7 @@
     openDSH: openDSH,
     manageCols: manageCols,
     openTemplateEditor: openTemplateEditor,
+    importExcel: importExcel,
     exportJSON: exportJSON,
     importJSON: importJSON,
     openModal: openModal,

@@ -46,9 +46,9 @@ if all_xml_ok:
 wb = ET.fromstring(zf.read('xl/workbook.xml'))
 sheets = wb.find(NS_MAIN + 'sheets')
 names_in_wb = [s.get('name') for s in sheets]
-expect_first = SAMPLE_COUNT = None
-if len(names_in_wb) >= 2 and names_in_wb[0] == '总览' and names_in_wb[-1] == '血缘清单':
-    ok('sheet 布局：总览(%d 模型 sheet)…血缘清单' % (len(names_in_wb) - 2))
+if len(names_in_wb) >= 5 and names_in_wb[0] == '配置' and names_in_wb[1] == '总览' \
+        and names_in_wb[-2] == '源表映射' and names_in_wb[-1] == '血缘清单':
+    ok('sheet 布局：配置/总览/%d 模型/源表映射/血缘清单' % (len(names_in_wb) - 4))
 else:
     fail('sheet 布局异常: %s' % names_in_wb)
 
@@ -61,11 +61,11 @@ def cell_text(c):
     v = c.find(NS_MAIN + 'v')
     return v.text if v is not None and v.text else ''
 
-ov = ET.fromstring(zf.read('xl/worksheets/sheet1.xml'))
+ov = ET.fromstring(zf.read('xl/worksheets/sheet2.xml'))
 rows = ov.findall(NS_MAIN + 'sheetData/' + NS_MAIN + 'row')
 header = [cell_text(c) for c in rows[0].findall(NS_MAIN + 'c')]
-if header[:7] == ['序号', '分层', '表名', '中文名', '描述', '源系统', '字段数']:
-    ok('总览表头正确: %s...' % ','.join(header[:7]))
+if header[:8] == ['序号', '分层', '表名', '中文名', '描述', '源系统', '逻辑说明', '字段数']:
+    ok('总览表头正确（含逻辑说明列）: %s...' % ','.join(header[:8]))
 else:
     fail('总览表头异常: %s' % header)
 
@@ -75,8 +75,28 @@ if data_rows >= 10:
 else:
     fail('总览数据行过少: %d' % data_rows)
 
-# 检查一个模型 sheet（sheet2 = 第一个模型）
-m = ET.fromstring(zf.read('xl/worksheets/sheet2.xml'))
+# 源表映射 sheet
+src_idx = names_in_wb.index('源表映射') + 1
+src = ET.fromstring(zf.read('xl/worksheets/sheet%d.xml' % src_idx))
+srows = src.findall(NS_MAIN + 'sheetData/' + NS_MAIN + 'row')
+sheader = [cell_text(c) for c in srows[0].findall(NS_MAIN + 'c')]
+if sheader == ['目标表', '源表', '别名', 'JOIN 条件']:
+    ok('源表映射表头正确，数据 %d 行' % (len(srows) - 1))
+else:
+    fail('源表映射表头异常: %s' % sheader)
+
+# 配置 sheet
+cfg_idx = names_in_wb.index('配置') + 1
+cfg = ET.fromstring(zf.read('xl/worksheets/sheet%d.xml' % cfg_idx))
+crows = cfg.findall(NS_MAIN + 'sheetData/' + NS_MAIN + 'row')
+ckeys = [cell_text(r.findall(NS_MAIN + 'c')[0]) for r in crows[1:]]
+if set(ckeys) >= {'项目名', '方言', '表级自定义列', '字段级自定义列'}:
+    ok('配置 sheet 四个配置项齐全')
+else:
+    fail('配置 sheet 异常: %s' % ckeys)
+
+# 检查一个模型 sheet（配置=1, 总览=2, 第一个模型=sheet3）
+m = ET.fromstring(zf.read('xl/worksheets/sheet3.xml'))
 pane = m.find(NS_MAIN + 'sheetViews/' + NS_MAIN + 'sheetView/' + NS_MAIN + 'pane')
 if pane is not None and pane.get('state') == 'frozen':
     ok('模型表首行冻结')

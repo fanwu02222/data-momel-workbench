@@ -13,6 +13,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const { spawn } = require('child_process');
 const { DatabaseSync } = require('node:sqlite');
 
@@ -223,7 +224,250 @@ function migrateIfNeeded() {
   }
 }
 
-// ================= DSH 后台任务 =================
+// ================= Excel 导入 =================
+// 解析 ZIP（EOCD → 中央目录 → 各条目；stored / deflate 均支持）
+function zipParse(buf) {
+  const sig = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65558); i--) {
+    if (buf[i] === sig[0] && buf[i + 1] === sig[1] && buf[i + 2] === sig[2] && buf[i + 3] === sig[3]) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('不是有效的 ZIP 文件（未找到 EOCD）');
+  const count = buf.readUInt16LE(eocd + 10);
+  const cdOffset = buf.readUInt32LE(eocd + 16);
+  const entries = {};
+  let p = cdOffset;
+  for (let i = 0; i < count; i++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) break;
+    const method = buf.readUInt16LE(p + 10);
+    const compSize = buf.readUInt32LE(p + 20);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const localOffset = buf.readUInt32LE(p + 42);
+    const flags = buf.readUInt16LE(p + 8);
+    const name = buf.slice(p + 46, p + 46 + nameLen).toString(flags & 0x800 ? 'utf8' : 'latin1');
+    const lnLen = buf.readUInt16LE(localOffset + 26);
+    const leLen = buf.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + lnLen + leLen;
+    const raw = buf.slice(dataStart, dataStart + compSize);
+    entries[name] = method === 0 ? Buffer.from(raw) : zlib.inflateRawSync(raw);
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+function xmlUnescape(s) {
+  return String(s || '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(+d))
+    .replace(/&amp;/g, '&');
+}
+function xmlTexts(xml, tag) {
+  const re = new RegExp('<' + tag + '(?:\\s[^>]*)?>([\\s\\S]*?)<\\/' + tag + '>', 'g');
+  let out = '', m;
+  while ((m = re.exec(xml)) !== null) out += m[1];
+  return xmlUnescape(out.replace(/<[^>]*>/g, ''));
+}
+
+// 解析 worksheet → 行×列 的二维文本数组
+function parseSheet(xml, shared) {
+  const rows = [];
+  const rowRe = /<row[^>]*\br="(\d+)"[^>]*>([\s\S]*?)<\/row>/g;
+  let rm;
+  while ((rm = rowRe.exec(xml)) !== null) {
+    const rowIdx = parseInt(rm[1], 10);
+    const cells = [];
+    const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+    let cm;
+    while ((cm = cellRe.exec(rm[2])) !== null) {
+      const attrs = cm[1] || '';
+      const ref = /\br="([A-Z]+)\d+"/.exec(attrs);
+      if (!ref) continue;
+      let col = 0;
+      for (const ch of ref[1]) col = col * 26 + (ch.charCodeAt(0) - 64);
+      const typeM = /\bt="(\w+)"/.exec(attrs);
+      const type = typeM ? typeM[1] : '';
+      const inner = cm[2] || '';
+      let text = '';
+      if (type === 'inlineStr') {
+        text = xmlTexts(inner, 't');
+      } else if (type === 's') {
+        const v = /<v(?:\s[^>]*)?>([\s\S]*?)<\/v>/.exec(inner);
+        if (v) text = shared[parseInt(v[1], 10)] || '';
+      } else {
+        const v = /<v(?:\s[^>]*)?>([\s\S]*?)<\/v>/.exec(inner);
+        if (v) text = type === 'b' ? (v[1] === '1' ? '是' : '') : xmlUnescape(v[1]);
+      }
+      cells[col - 1] = text;
+    }
+    rows[rowIdx - 1] = cells;
+  }
+  // 压实稀疏数组
+  for (let i = 0; i < rows.length; i++) if (!rows[i]) rows[i] = [];
+  return rows;
+}
+
+function importExcel(buf, mode) {
+  if (buf.length < 4 || buf[0] !== 0x50 || buf[1] !== 0x4b) throw new Error('不是有效的 .xlsx 文件');
+  const z = zipParse(buf);
+  const enc = (s) => s.replace(/^\uFEFF/, '').trim();
+
+  // 共享字符串
+  const shared = [];
+  if (z['xl/sharedStrings.xml']) {
+    const xml = z['xl/sharedStrings.xml'].toString('utf8');
+    const re = /<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g;
+    let m;
+    while ((m = re.exec(xml)) !== null) shared.push(xmlTexts(m[1], 't'));
+  }
+
+  // sheet 顺序：workbook.xml + rels
+  const wbXml = z['xl/workbook.xml'].toString('utf8');
+  const relsXml = z['xl/_rels/workbook.xml.rels'] ? z['xl/_rels/workbook.xml.rels'].toString('utf8') : '';
+  const relMap = {};
+  const relRe = /<Relationship\b[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"[^>]*\/?>/g;
+  let rm;
+  while ((rm = relRe.exec(relsXml)) !== null) relMap[rm[1]] = rm[2];
+  const sheetOrder = [];
+  const sheetRe = /<sheet\b[^>]*name="([^"]*)"[^>]*r:id="([^"]+)"[^>]*\/?>/g;
+  while ((rm = sheetRe.exec(wbXml)) !== null) {
+    const target = (relMap[rm[2]] || '').replace(/^\//, '').replace(/^xl\//, '');
+    const file = 'xl/' + target;
+    if (z[file]) sheetOrder.push({ name: xmlUnescape(rm[1]), grid: parseSheet(z[file].toString('utf8'), shared) });
+  }
+  if (!sheetOrder.length) throw new Error('xlsx 中未找到工作表');
+
+  const byName = {};
+  sheetOrder.forEach(s => { byName[s.name] = s.grid; });
+  const grid = (name) => byName[name] || [];
+  const headerOf = (g) => (g[0] || []).map(x => String(x || '').trim());
+  const findCol = (headers, names) => headers.findIndex(h => names.indexOf(h) >= 0);
+
+  // ---------- 配置 ----------
+  const imported = { name: null, dialect: null, customCols: null };
+  const cfg = grid('配置');
+  if (cfg.length > 1) {
+    for (let i = 1; i < cfg.length; i++) {
+      const k = String(cfg[i][0] || '').trim(), v = cfg[i][1] !== undefined ? String(cfg[i][1] || '') : '';
+      if (k === '项目名') imported.name = v;
+      else if (k === '方言') imported.dialect = v;
+      else if (k === '表级自定义列' || k === '字段级自定义列') {
+        try {
+          const list = JSON.parse(v);
+          if (!imported.customCols) imported.customCols = { model: [], field: [] };
+          imported.customCols[k === '表级自定义列' ? 'model' : 'field'] = Array.isArray(list) ? list : [];
+        } catch (e) { /* 非法 JSON 忽略 */ }
+      }
+    }
+  }
+
+  // ---------- 总览 → 模型基础信息 ----------
+  const ov = grid('总览');
+  const ovHead = headerOf(ov);
+  const ovCol = {
+    layer: findCol(ovHead, ['分层']), name: findCol(ovHead, ['表名']), cn: findCol(ovHead, ['中文名']),
+    desc: findCol(ovHead, ['描述']), source: findCol(ovHead, ['源系统']), notes: findCol(ovHead, ['逻辑说明']),
+    where: findCol(ovHead, ['WHERE']), groupBy: findCol(ovHead, ['GROUP BY'])
+  };
+  if (ovCol.name < 0) throw new Error('总览缺少「表名」列，无法识别模型');
+  const modelCols = (imported.customCols && imported.customCols.model) || [];
+  const models = [];
+  for (let i = 1; i < ov.length; i++) {
+    const row = ov[i];
+    if (!row || !String(row[ovCol.name] || '').trim()) continue;
+    const m = { layer: 'ods', name: String(row[ovCol.name]).trim(), cnName: '', desc: '', source: '', notes: '', where: '', groupBy: '', fields: [], partition: [], sources: [] };
+    if (ovCol.layer >= 0) m.layer = String(row[ovCol.layer] || '').trim().toLowerCase() || 'ods';
+    if (ovCol.cn >= 0) m.cnName = String(row[ovCol.cn] || '');
+    if (ovCol.desc >= 0) m.desc = String(row[ovCol.desc] || '');
+    if (ovCol.source >= 0) m.source = String(row[ovCol.source] || '');
+    if (ovCol.notes >= 0) m.notes = String(row[ovCol.notes] || '');
+    if (ovCol.where >= 0) m.where = String(row[ovCol.where] || '');
+    if (ovCol.groupBy >= 0) m.groupBy = String(row[ovCol.groupBy] || '');
+    modelCols.forEach(c => { m[c.key] = String(row[ovHead.indexOf(c.label)] || '') || ''; });
+    models.push(m);
+  }
+  const modelByName = {};
+  models.forEach(m => { modelByName[m.name] = m; });
+
+  // ---------- 模型 sheet → 字段/分区 ----------
+  const fieldCols = (imported.customCols && imported.customCols.field) || [];
+  sheetOrder.forEach(s => {
+    if (['配置', '总览', '源表映射', '血缘清单'].indexOf(s.name) >= 0) return;
+    const m = modelByName[s.name];
+    if (!m) {
+      // Excel 里出现总览没有的新 sheet → 作为新模型导入（按 sheet 名当表名）
+      models.push({ layer: 'ods', name: s.name, cnName: '', desc: '', source: '', notes: '', where: '', groupBy: '', fields: [], partition: [], sources: [] });
+      return;
+    }
+    const head = headerOf(s.grid);
+    const cName = findCol(head, ['字段名']), cType = findCol(head, ['类型']), cComment = findCol(head, ['注释']);
+    const cPk = findCol(head, ['主键']), cExpr = head.findIndex(h => h.indexOf('业务逻辑') === 0), cPart = findCol(head, ['分区']);
+    m.fields = []; m.partition = [];
+    for (let i = 1; i < s.grid.length; i++) {
+      const row = s.grid[i];
+      const name = row && row[cName] !== undefined ? String(row[cName] || '').trim() : '';
+      if (!name) continue;
+      const f = {
+        name, type: cType >= 0 ? String(row[cType] || 'string') : 'string',
+        comment: cComment >= 0 ? String(row[cComment] || '') : '',
+        pk: cPk >= 0 && String(row[cPk] || '').trim() === '是',
+        expr: cExpr >= 0 ? String(row[cExpr] || '') : ''
+      };
+      fieldCols.forEach(c => { f[c.key] = String(row[head.indexOf(c.label)] || '') || ''; });
+      if (cPart >= 0 && String(row[cPart] || '').trim() === '分区') m.partition.push(f);
+      else m.fields.push(f);
+    }
+  });
+
+  // ---------- 源表映射 → sources ----------
+  const src = grid('源表映射');
+  if (src.length > 1) {
+    const head = headerOf(src);
+    const cT = findCol(head, ['目标表']), cS = findCol(head, ['源表']), cA = findCol(head, ['别名']), cOn = findCol(head, ['JOIN 条件', 'JOIN条件']);
+    if (cT >= 0 && cS >= 0) {
+      for (let i = 1; i < src.length; i++) {
+        const row = src[i];
+        const target = row && row[cT] !== undefined ? String(row[cT] || '').trim() : '';
+        const name = row && row[cS] !== undefined ? String(row[cS] || '').trim() : '';
+        if (!target || !name) continue;
+        const m = modelByName[target];
+        if (!m) continue;
+        m.sources.push({ name, alias: cA >= 0 ? String(row[cA] || '') : '', on: cOn >= 0 ? String(row[cOn] || '') : '' });
+      }
+    }
+  }
+
+  // ---------- 合并 / 替换 ----------
+  const current = dbGetProject();
+  let result;
+  if (mode === 'replace') {
+    result = {
+      name: imported.name || (current ? current.name : '未命名项目'),
+      dialect: imported.dialect || (current ? current.dialect : 'hive'),
+      customCols: imported.customCols || (current ? current.customCols : undefined),
+      models
+    };
+  } else { // merge：文件里的模型按表名覆盖/追加，其余保持
+    result = Object.assign({}, current || { name: '未命名项目', dialect: 'hive', models: [] });
+    if (imported.customCols) result.customCols = imported.customCols;
+    // 合并模式保留当前项目名与方言，仅模型按表名覆盖/追加
+    const base = Array.isArray(result.models) ? result.models : [];
+    const added = [], updated = [];
+    models.forEach(m => {
+      const idx = base.findIndex(x => x.name === m.name);
+      if (idx >= 0) { base[idx] = Object.assign({}, base[idx], m, { id: base[idx].id }); updated.push(m.name); }
+      else { m.id = 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7); base.push(m); added.push(m.name); }
+    });
+    result.models = base;
+    result._report = { added, updated };
+  }
+  dbPutProject(result);
+  const saved = dbGetProject();
+  const report = result._report || { added: models.map(m => m.name), updated: [] };
+  delete result._report;
+  return { project: saved, added: report.added, updated: report.updated, total: saved.models.length };
+}
 let dshJobs = {};
 let dshJobSeq = 0;
 
@@ -271,7 +515,7 @@ function readBody(req, limit) {
       if (size > (limit || 20 * 1024 * 1024)) { reject(new Error('body too large')); req.destroy(); return; }
       chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('end', () => resolve(Buffer.concat(chunks))); // 返回 Buffer，文本方自行 toString
     req.on('error', reject);
   });
 }
@@ -282,7 +526,11 @@ function serveStatic(req, res, pathname) {
   if (!file.startsWith(ROOT)) { res.writeHead(403); res.end('forbidden'); return; }
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('not found'); return; }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+    // 本地工具：禁用缓存，保证改代码后浏览器立即生效
+    res.writeHead(200, {
+      'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
+      'Cache-Control': 'no-cache, no-store, must-revalidate'
+    });
     res.end(data);
   });
 }
@@ -302,7 +550,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'PUT') {
       try {
-        const body = await readBody(req);
+        const body = (await readBody(req)).toString('utf-8');
         const data = JSON.parse(body); // 校验
         dbPutProject(data);
         return sendJSON(res, 200, { ok: true, storage: DB_FILE });
@@ -311,9 +559,18 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 405, { error: 'method not allowed' });
   }
 
+  if (pathname === '/api/import/excel' && req.method === 'POST') {
+    try {
+      const buf = await readBody(req, 20 * 1024 * 1024);
+      const mode = u.searchParams.get('mode') === 'replace' ? 'replace' : 'merge';
+      const result = importExcel(buf, mode);
+      return sendJSON(res, 200, result);
+    } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+  }
+
   if (pathname === '/api/dsh' && req.method === 'POST') {
     try {
-      const body = JSON.parse(await readBody(req));
+      const body = JSON.parse((await readBody(req)).toString('utf-8'));
       const prompt = String(body.prompt || '').trim();
       if (!prompt) return sendJSON(res, 400, { error: 'prompt 不能为空' });
       const job = startDshJob(prompt);
