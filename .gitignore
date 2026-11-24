@@ -3,11 +3,17 @@ workbench.db
 workbench.db-shm
 workbench.db-wal
 project.json
+project-backup*.json
 
 # 运行时产物
 *.log
 .playwright-cli/
 node_modules/
+
+# Go 构建产物（源码入库，二进制不入库）
+dw-workbench-go
+dw-workbench-go-*
+/target/
 
 # 系统文件
 .DS_Store

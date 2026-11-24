@@ -1,0 +1,18 @@
+# 版本管理
+.git/
+.playwright-cli/
+
+# 用户数据（不入镜像）
+workbench.db
+workbench.db-shm
+workbench.db-wal
+project.json
+project-backup*.json
+
+# 测试与产物（镜像不需要）
+test/
+dist/
+*.log
+node_modules/
+.DS_Store
+Thumbs.db

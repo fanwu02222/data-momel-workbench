@@ -6,16 +6,42 @@
   var Store = root.Store, Editor = root.Editor, Dialogs = root.Dialogs, Lineage = root.Lineage, SQLGen = root.SQLGen;
 
   var LAYERS = [
-    { key: 'ods', title: 'ODS · 原始数据层', desc: '贴源表，与源系统一致' },
-    { key: 'dim', title: 'DIM · 维度层', desc: '一致性维度，支撑明细与分析' },
-    { key: 'dwd', title: 'DWD · 明细数据层', desc: '清洗/标准化后的明细事实' },
-    { key: 'dws', title: 'DWS · 汇总数据层', desc: '轻度聚合，公共粒度汇总' },
-    { key: 'ads', title: 'ADS · 应用数据层', desc: '面向报表与应用的结果表' }
+    { key: 'ods', short: 'ODS', cn: '贴源层', title: 'ODS · 原始数据层', desc: '贴源表，与源系统一致' },
+    { key: 'dim', short: 'DIM', cn: '维度层', title: 'DIM · 维度层', desc: '一致性维度，支撑明细与分析' },
+    { key: 'dwd', short: 'DWD', cn: '明细层', title: 'DWD · 明细数据层', desc: '清洗/标准化后的明细事实' },
+    { key: 'dws', short: 'DWS', cn: '汇总层', title: 'DWS · 汇总数据层', desc: '轻度聚合，公共粒度汇总' },
+    { key: 'ads', short: 'ADS', cn: '应用层', title: 'ADS · 应用数据层', desc: '面向报表与应用的结果表' }
   ];
   var currentTab = 'model';
   var lineageMode = 'field'; // field | global
 
+  // 侧栏视图：layer=按分层（默认） catalog=按业务目录（L1-L5 树）
+  var VIEW_KEY = 'dw-workbench-sidebar-view';
+  var sidebarView = 'layer';
+  try { var savedView = localStorage.getItem(VIEW_KEY); if (savedView === 'catalog') sidebarView = 'catalog'; } catch (e) { }
+  var catCollapsed = {}; // 目录节点折叠状态（仅存内存）
+  var layerCollapsed = {}; // 分层视图各层折叠状态（仅存内存）
+
   function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+  // ---------- 侧栏：模型卡片（两种视图共用） ----------
+  var TABLE_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2.3" y="2.3" width="11.4" height="11.4" rx="2"/><path d="M2.3 6.1h11.4M6.2 6.1v7.6"/></svg>';
+
+  function modelItemHTML(m) {
+    var sel = m.id === Store.selectedId ? ' selected' : '';
+    var n = (m.fields || []).length;
+    var searchText = ((m.name || '') + ' ' + (m.cnName || '') + ' ' + (m.fields || []).map(function (f) { return f.name || ''; }).join(' ')).toLowerCase();
+    var h = '<div class="model-item' + sel + '" data-id="' + m.id + '" data-search="' + esc(searchText) + '">';
+    h += '<span class="model-ico">' + TABLE_ICON + '</span>';
+    h += '<div class="model-item-main"><span class="model-name">' + esc(m.name || '（未命名）') + '</span>' + (m.cnName ? '<span class="model-cn">' + esc(m.cnName) + '</span>' : '<span class="model-cn">未命名中文</span>') + '</div>';
+    h += '<span class="model-field-count">' + n + '</span>';
+    h += '<span class="model-acts">'
+      + '<button class="icon-btn" data-act="dup" data-id="' + m.id + '" title="复制模型"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="5.4" y="5.4" width="7.4" height="7.4" rx="1.4"/><path d="M10.6 5.4V4a1.2 1.2 0 0 0-1.2-1.2H4a1.2 1.2 0 0 0-1.2 1.2v5.4A1.2 1.2 0 0 0 4 10.6h1.4"/></svg></button>'
+      + '<button class="icon-btn danger" data-act="del" data-id="' + m.id + '" title="删除"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2"/></svg></button>'
+      + '</span>';
+    h += '</div>';
+    return h;
+  }
 
   // ---------- 侧栏 ----------
   function renderSidebar() {
@@ -24,30 +50,256 @@
     var h = [];
     LAYERS.forEach(function (ly) {
       var ms = models.filter(function (m) { return m.layer === ly.key; });
+      var collapsed = !!layerCollapsed[ly.key];
       h.push('<div class="layer-group" data-layer="' + ly.key + '">');
-      h.push('<div class="layer-head"><span class="layer-dot ' + ly.key + '"></span><span class="layer-title">' + ly.title + '</span><span class="layer-count">' + ms.length + '</span></div>');
-      h.push('<div class="layer-desc">' + ly.desc + '</div>');
-      h.push('<div class="layer-models">');
-      if (!ms.length) h.push('<div class="layer-empty">暂无模型</div>');
-      ms.forEach(function (m) {
-        var sel = m.id === Store.selectedId ? ' selected' : '';
-        h.push('<div class="model-item' + sel + '" data-id="' + m.id + '">');
-        h.push('<div class="model-item-main"><span class="model-name mono">' + esc(m.name || '（未命名）') + '</span>' + (m.cnName ? '<span class="model-cn">' + esc(m.cnName) + '</span>' : '') + '</div>');
-        h.push('<div class="model-item-meta"><span>' + ((m.fields || []).length) + ' 字段</span>' + ((m.sources || []).length ? '<span>← ' + (m.sources || []).length + ' 源</span>' : '') + '</div>');
-        h.push('<span class="model-acts"><button class="icon-btn" data-act="dup" data-id="' + m.id + '" title="复制模型">⧉</button><button class="icon-btn danger" data-act="del" data-id="' + m.id + '" title="删除">✕</button></span>');
+      h.push('<div class="layer-head' + (collapsed ? ' is-collapsed' : '') + '" data-layer-toggle="' + ly.key + '">'
+        + '<span class="layer-caret"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.3 8 10.3l4-4"/></svg></span>'
+        + '<span class="layer-chip ' + ly.key + '">' + ly.short + '</span>'
+        + '<span class="layer-title">' + ly.cn + '</span>'
+        + '<span class="layer-count">' + ms.length + '</span></div>');
+      if (!collapsed) {
+        h.push('<div class="layer-models">');
+        if (!ms.length) h.push('<div class="layer-empty">暂无模型</div>');
+        ms.forEach(function (m) { h.push(modelItemHTML(m)); });
         h.push('</div>');
-      });
-      h.push('</div></div>');
+      }
+      h.push('</div>');
     });
     box.innerHTML = h.join('');
+    applySearch();
+  }
+
+  // ---------- 侧栏搜索过滤 ----------
+  function applySearch() {
+    var input = document.getElementById('model-search');
+    if (!input) return;
+    var q = (input.value || '').trim().toLowerCase();
+    document.querySelectorAll('#layer-groups .model-item, #catalog-view .model-item').forEach(function (el) {
+      var hit = !q || (el.getAttribute('data-search') || '').indexOf(q) >= 0;
+      el.style.display = hit ? '' : 'none';
+    });
+    document.querySelectorAll('#layer-groups .layer-group').forEach(function (g) {
+      if (!q) { g.style.display = ''; return; }
+      var vis = 0;
+      g.querySelectorAll('.model-item').forEach(function (it) { if (it.style.display !== 'none') vis++; });
+      g.style.display = vis ? '' : 'none';
+    });
+  }
+
+  // ---------- 侧栏：业务目录树（L1-L5） ----------
+  // 节点子树内的模型总数（含挂在后代节点上的）
+  function subtreeModelCount(node) {
+    var ids = Store.catalogSubtreeIds(node.id);
+    return Store.getModels().filter(function (m) { return m.catalogId && ids.indexOf(String(m.catalogId)) >= 0; }).length;
+  }
+
+  function catNodeHTML(n, depth, byCat) {
+    var kids = n.children || [];
+    var hasKids = kids.length > 0;
+    var collapsed = !!catCollapsed[n.id];
+    var modelsHere = byCat[n.id] || [];
+    var subCount = subtreeModelCount(n);
+    var h = [];
+    h.push('<div class="cat-node" data-node="' + n.id + '" style="--cat-depth:' + depth + '">');
+    h.push('<div class="cat-row">');
+    h.push('<span class="cat-caret' + (hasKids ? '' : ' leaf') + '" data-toggle="' + n.id + '"' + (hasKids ? ' title="' + (collapsed ? '展开' : '折叠') + '"' : '') + '>' + (hasKids ? (collapsed ? '▸' : '▾') : '·') + '</span>');
+    h.push('<span class="cat-level l' + n.level + '">L' + n.level + '</span>');
+    h.push('<span class="cat-name">' + esc(n.name) + '</span>');
+    if (n.cnName) h.push('<span class="cat-cn">' + esc(n.cnName) + '</span>');
+    if (subCount) h.push('<span class="cat-badge" title="子树内模型数">' + subCount + '</span>');
+    h.push('<span class="cat-ops">');
+    h.push('<button class="icon-btn" data-cat="add" data-node="' + n.id + '" title="新建子节点">＋</button>');
+    h.push('<button class="icon-btn" data-cat="rename" data-node="' + n.id + '" title="改名">✎</button>');
+    h.push('<button class="icon-btn danger" data-cat="del" data-node="' + n.id + '" title="删除（整棵子树）">✕</button>');
+    h.push('</span></div>');
+    if (modelsHere.length && !collapsed) {
+      h.push('<div class="cat-models">');
+      modelsHere.forEach(function (m) { h.push(modelItemHTML(m)); });
+      h.push('</div>');
+    }
+    if (hasKids && !collapsed) {
+      h.push('<div class="cat-children">');
+      kids.forEach(function (k) { h.push(catNodeHTML(k, depth + 1, byCat)); });
+      h.push('</div>');
+    }
+    h.push('</div>');
+    return h.join('');
+  }
+
+  function renderCatalogView() {
+    var box = document.getElementById('catalog-view');
+    if (!box) return;
+    if (sidebarView !== 'catalog' || !Store.project) { box.style.display = 'none'; return; }
+    box.style.display = '';
+    var models = Store.getModels();
+    var validIds = {};
+    (function walkAll(nodes) { (nodes || []).forEach(function (n) { validIds[n.id] = true; walkAll(n.children || []); }); })(Store.catalog);
+    var byCat = {};
+    var uncat = [];
+    models.forEach(function (m) {
+      var c = m.catalogId ? String(m.catalogId) : '';
+      if (!c || !validIds[c]) { uncat.push(m); return; }
+      (byCat[c] = byCat[c] || []).push(m);
+    });
+    var h = [];
+    h.push('<div class="cat-group">');
+    h.push('<div class="cat-group-head"><span class="cat-group-title">未归类</span><span class="layer-count">' + uncat.length + '</span></div>');
+    h.push('<div class="cat-models flat">');
+    if (!uncat.length) h.push('<div class="layer-empty">没有未归类模型</div>');
+    uncat.forEach(function (m) { h.push(modelItemHTML(m)); });
+    h.push('</div></div>');
+    h.push('<div class="cat-tree">');
+    if (!Store.catalog.length) h.push('<div class="layer-empty">暂无业务目录，点击下方「＋ 新建业务域」创建根节点</div>');
+    Store.catalog.forEach(function (n) { h.push(catNodeHTML(n, 1, byCat)); });
+    h.push('</div>');
+    h.push('<button class="btn small cat-add-root" id="btn-new-domain">＋ 新建业务域</button>');
+    box.innerHTML = h.join('');
+    applySearch();
+    var addBtn = document.getElementById('btn-new-domain');
+    if (addBtn) addBtn.onclick = function () { openCatalogNodeDialog('root', null); };
+  }
+
+  // 侧栏视图切换（按分层 / 按业务目录）
+  function setSidebarView(v) {
+    sidebarView = v;
+    try { localStorage.setItem(VIEW_KEY, v); } catch (e) { }
+    document.querySelectorAll('.sidebar-toggle .seg-btn').forEach(function (b) { b.classList.toggle('active', b.dataset.view === v); });
+    document.getElementById('layer-groups').style.display = v === 'layer' ? '' : 'none';
+    var title = document.getElementById('sidebar-title');
+    if (title) title.textContent = v === 'layer' ? '数据分层' : '业务目录树';
+    renderCatalogView();
+  }
+
+  // ---------- 目录节点弹窗：新建（根/子）/ 改名 ----------
+  function openCatalogNodeDialog(mode, node) {
+    var isRoot = mode === 'root', isRename = mode === 'rename';
+    // 子节点级别规则：L1 下→L2；L2 下→L2 子域或 L3；L3 下→L3（同级）
+    var levelOpts;
+    if (isRoot) levelOpts = [{ v: 1, label: 'L1 · 业务域' }];
+    else if (node.level === 1) levelOpts = [{ v: 2, label: 'L2 · 主题域' }];
+    else if (node.level === 2) levelOpts = [{ v: 2, label: 'L2 · 主题域（子域）' }, { v: 3, label: 'L3 · 业务对象' }];
+    else levelOpts = [{ v: 3, label: 'L3 · 业务对象（同级）' }];
+    var title = isRename ? '改名目录节点' : (isRoot ? '新建业务域（L1 根节点）' : '新建子节点');
+    var wrap = document.createElement('div');
+    wrap.innerHTML =
+      '<div class="form-grid cat-dialog">' +
+      '<label>名称<input id="cn-name" placeholder="如：财务域 / 应收 / 发票"></label>' +
+      '<label>中文名<input id="cn-cn" placeholder="如：应收管理"></label>' +
+      (isRename ? '' : '<label>级别<select id="cn-level">' + levelOpts.map(function (o) { return '<option value="' + o.v + '">' + o.label + '</option>'; }).join('') + '</select></label>') +
+      '</div>' +
+      (!isRoot ? '<p class="hint small cat-parent-hint">父节点：' + esc(node.name) + (node.cnName ? '（' + esc(node.cnName) + '）' : '') + ' · 层级语义 L1 业务域 → L2 主题域 → L3 业务对象，L4=挂载模型，L5=字段</p>' : '');
+    if (isRename) {
+      wrap.querySelector('#cn-name').value = node.name || '';
+      wrap.querySelector('#cn-cn').value = node.cnName || '';
+    }
+    Dialogs.openModal(title, wrap, [{
+      label: isRename ? '保存' : '创建', cls: 'primary', onClick: function () {
+        var name = wrap.querySelector('#cn-name').value.trim();
+        var cnName = wrap.querySelector('#cn-cn').value.trim();
+        if (!name) { Dialogs.toast('节点名称不能为空', true); return; }
+        var done;
+        if (isRename) done = Store.renameCatalogNode(node.id, name, cnName);
+        else {
+          var level = parseInt(wrap.querySelector('#cn-level').value, 10) || levelOpts[0].v;
+          done = Store.createCatalogNode(isRoot ? '' : node.id, level, name, cnName);
+        }
+        done.then(function () {
+          if (!isRoot && !isRename) delete catCollapsed[node.id]; // 新建子节点后确保父节点展开
+          Dialogs.closeModal();
+          Dialogs.toast(isRename ? '已更新节点「' + name + '」' : '已创建节点「' + name + '」');
+        }).catch(function (e) { Dialogs.toast('操作失败：' + e.message, true); });
+      }
+    }]);
+  }
+
+  function confirmDeleteNode(node) {
+    var n = Store.catalogSubtreeIds(node.id).length;
+    var mc = subtreeModelCount(node);
+    var msg = '确定删除「' + (node.name || '') + '」？' + (n > 1 ? '整棵子树共 ' + n + ' 个节点都会删除。' : '');
+    msg += mc ? '挂在其中的 ' + mc + ' 个模型将回到「未归类」（模型本身不会被删除）。' : '挂在其中的模型将回到「未归类」（模型本身不会被删除）。';
+    if (!confirm(msg)) return;
+    Store.deleteCatalogNode(node.id).then(function (d) {
+      Dialogs.toast('已删除 ' + (d.deleted || n) + ' 个目录节点');
+    }).catch(function (e) { Dialogs.toast('删除失败：' + e.message, true); });
   }
 
   // ---------- 顶栏状态 ----------
+  // 反映「编辑是否已落到 SQLite」：保存中 / 已保存 HH:MM:SS / 同步失败 / 本地模式
   function renderStatus(source) {
     var elx = document.getElementById('save-status');
     if (!elx) return;
-    if (Store.serverOnline) elx.innerHTML = '<span class="dot ok"></span>已连接本地服务（SQLite）';
-    else elx.innerHTML = '<span class="dot warn"></span>本地模式（浏览器存储）';
+    if (!Store.serverOnline) {
+      elx.innerHTML = '<span class="dot warn"></span>本地模式';
+      elx.title = '未连接服务端，改动只存在浏览器 localStorage';
+      return;
+    }
+    var st = Store.saveState;
+    if (st === 'saving') { elx.innerHTML = '<span class="dot warn"></span>保存中…'; elx.title = '正在写入 SQLite'; return; }
+    if (st === 'error') { elx.innerHTML = '<span class="dot warn"></span>同步失败 · 已存本地'; elx.title = Store.saveStateMsg || '写入服务端失败'; return; }
+    if (st === 'saved' && Store.lastSavedAt) { elx.innerHTML = '<span class="dot ok"></span>已保存 ' + Store.lastSavedAt; elx.title = '已写入 SQLite'; return; }
+    elx.innerHTML = '<span class="dot ok"></span>SQLite 已连接';
+    elx.title = '数据存于 workbench.db';
+  }
+
+  // ---------- 顶栏：项目切换器 ----------
+  function renderProjectSelect() {
+    var sel = document.getElementById('project-select');
+    if (!sel) return;
+    if (!Store.serverOnline) {
+      sel.innerHTML = '<option>本地模式（未连接服务）</option>';
+      sel.disabled = true;
+      return;
+    }
+    sel.disabled = false;
+    var h = [];
+    Store.projects.forEach(function (p) {
+      h.push('<option value="' + p.id + '"' + (p.id === Store.projectId ? ' selected' : '') + ' title="' + (p.modelCount || 0) + ' 个模型">' + esc(p.name) + '</option>');
+    });
+    if (!Store.projects.length) h.push('<option value="' + Store.projectId + '">项目 ' + Store.projectId + '</option>');
+    h.push('<option value="__new__">＋ 新建项目…</option>');
+    sel.innerHTML = h.join('');
+  }
+
+  function switchProject(id) {
+    if (id === Store.projectId) { renderProjectSelect(); return; }
+    if (!confirm('切换项目？当前项目的修改会自动保存到数据库。')) { renderProjectSelect(); return; }
+    // 先把当前项目的待写入改动落库，再加载新项目，避免防抖窗口内的编辑丢失或串项目
+    Store.flushSave().catch(function () { }).then(function () {
+      Store.loadProject(id, function () {
+        catCollapsed = {}; // 不同项目的目录树，折叠状态重置
+        App.refresh();
+        var meta = Store.projects.filter(function (p) { return p.id === id; })[0];
+        Dialogs.toast('已切换到「' + (Store.project.name || (meta && meta.name) || ('项目 ' + id)) + '」');
+      });
+    });
+  }
+
+  function openNewProject() {
+    var wrap = document.createElement('div');
+    var dialects = ['hive', 'mysql', 'clickhouse', 'postgresql'];
+    wrap.innerHTML =
+      '<div class="form-grid cat-dialog">' +
+      '<label>项目名称<input id="np-name" placeholder="如：零售交易数仓"></label>' +
+      '<label>默认方言<select id="np-dialect">' + dialects.map(function (d) {
+        return '<option value="' + d + '"' + (Store.project && Store.project.dialect === d ? ' selected' : '') + '>' + SQLGen.dialectName(d) + '</option>';
+      }).join('') + '</select></label>' +
+      '</div>' +
+      '<p class="hint small cat-parent-hint">新项目为空项目（无模型），创建后自动切换过去；各项目的模型与业务目录相互独立。</p>';
+    Dialogs.openModal('新建项目', wrap, [{
+      label: '创建', cls: 'primary', onClick: function () {
+        var name = wrap.querySelector('#np-name').value.trim();
+        var dialect = wrap.querySelector('#np-dialect').value;
+        if (!name) { Dialogs.toast('请填写项目名称', true); return; }
+        Store.createProject(name, dialect).then(function (d) {
+          Dialogs.closeModal();
+          return Store.loadProject(d.project.id, function () {
+            catCollapsed = {};
+            App.refresh();
+            Dialogs.toast('已创建并切换到「' + d.project.name + '」');
+          });
+        }).catch(function (e) { Dialogs.toast('创建项目失败：' + e.message, true); });
+      }
+    }]);
   }
 
   // ---------- SQL 预览 ----------
@@ -129,7 +381,11 @@
     h.push('<button class="seg-btn' + (lineageMode === 'field' ? ' active' : '') + '" data-mode="field">字段级血缘（当前模型）</button>');
     h.push('<button class="seg-btn' + (lineageMode === 'global' ? ' active' : '') + '" data-mode="global">全局模型血缘</button>');
     h.push('</div>');
-    h.push('<div class="lin-tools"><span class="hint">拖动平移 · 滚轮缩放 · 悬停字段名高亮</span><button class="btn small" id="btn-lin-reset">重置视图</button></div>');
+    h.push('<div class="lin-tools"><span class="hint">' + (lineageMode === 'global'
+      ? '拖动模型调整布局 · 空白处拖动平移 · 滚轮缩放 · 点击模型下钻'
+      : '拖动平移 · 滚轮缩放 · 悬停字段名高亮') + '</span>'
+      + (lineageMode === 'global' ? '<button class="btn small" id="btn-lin-clear">重置布局</button>' : '')
+      + '<button class="btn small" id="btn-lin-reset">适应窗口</button></div>');
     h.push('</div>');
     h.push('<div class="lin-canvas-wrap"><div id="lin-canvas" class="lin-canvas"></div></div>');
     h.push('<div id="lin-warnings" class="lin-warnings"></div>');
@@ -143,6 +399,13 @@
     document.getElementById('btn-lin-reset').onclick = function () {
       var svg = canvas.querySelector('svg');
       if (svg && svg._resetView) svg._resetView();
+    };
+    var btnClear = document.getElementById('btn-lin-clear');
+    if (btnClear) btnClear.onclick = function () {
+      delete Store.project.layout;
+      Store.autosave();
+      renderLineagePane();
+      Dialogs.toast('已恢复默认布局');
     };
     if (lineageMode === 'field') {
       if (!m) {
@@ -160,6 +423,9 @@
         Store.selectedId = id;
         lineageMode = 'field';
         refresh();
+      }, {
+        getLayout: function () { return Store.project.layout || null; },
+        saveLayout: function (lay) { Store.project.layout = lay; Store.autosave(); }
       });
       warnBox.innerHTML = '<div class="ok-box">共 ' + graph.nodes.length + ' 个模型、' + graph.edges.length + ' 条表级血缘（点击模型可查看其字段级血缘）</div>';
     }
@@ -169,6 +435,7 @@
   function switchTab(tab) {
     currentTab = tab;
     document.querySelectorAll('#tabs button').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === tab); });
+    document.querySelectorAll('.rail-item').forEach(function (b) { b.classList.toggle('active', b.dataset.rail === tab); });
     ['model', 'lineage', 'sql'].forEach(function (t) {
       document.getElementById('pane-' + t).style.display = t === tab ? '' : 'none';
     });
@@ -181,7 +448,9 @@
   function refresh() {
     document.getElementById('project-name').value = Store.project.name || '';
     document.getElementById('dialect').value = Store.project.dialect || 'hive';
+    renderProjectSelect();
     renderSidebar();
+    renderCatalogView();
     renderStatus();
     switchTab(currentTab);
   }
@@ -205,13 +474,37 @@
   // ---------- 初始化 ----------
   function init() {
     initTheme();
-    // 数据变更 → 即时重渲染（增删字段/模型、切层、导入等操作立即生效）
+
+    // 侧栏：搜索过滤 / 整栏收起 / 图标轨道
+    var searchInput = document.getElementById('model-search');
+    if (searchInput) searchInput.addEventListener('input', applySearch);
+    var sidebarEl = document.getElementById('sidebar');
+    var RAIL_KEY = 'dw-workbench-sidebar-collapsed';
+    function applyRail(c) {
+      sidebarEl.classList.toggle('collapsed', c);
+      try { localStorage.setItem(RAIL_KEY, c ? '1' : '0'); } catch (e) { }
+    }
+    var railBtn = document.getElementById('rail-btn');
+    if (railBtn) railBtn.onclick = function () { applyRail(!sidebarEl.classList.contains('collapsed')); };
+    try { if (localStorage.getItem(RAIL_KEY) === '1') applyRail(true); } catch (e) { }
+    document.querySelectorAll('.rail-item').forEach(function (b) {
+      b.onclick = function () {
+        var r = b.dataset.rail;
+        if (r === 'new') { document.getElementById('btn-new-model').click(); return; }
+        switchTab(r);
+      };
+    });
+    setSidebarView(sidebarView); // 应用上次的侧栏视图（localStorage 记忆，默认「按分层」）
+    // 数据变更 → 即时重渲染（增删字段/模型、切层、导入、目录树变更等操作立即生效）
     Store.onChange(function () {
       renderSidebar();
+      renderCatalogView();
       renderStatus();
       if (currentTab === 'model') Editor.render();
       else if (currentTab === 'lineage') renderLineagePane();
     });
+    // 保存状态单独监听：只更新顶栏文案，不触发整页重渲染（避免输入时丢焦点）
+    Store.onSaveState(function () { renderStatus(); });
 
     // 顶栏
     document.getElementById('btn-new-model').onclick = function () {
@@ -237,6 +530,23 @@
         }
       ]);
     };
+    document.getElementById('btn-rename-project').onclick = function () {
+      var w = document.createElement('div');
+      w.innerHTML = '<label class="notes-label">项目名称<input id="rp-name" class="col-input" style="height:34px" value="' + esc(Store.project.name || '') + '"></label>';
+      Dialogs.openModal('重命名项目', w, [{
+        label: '保存', cls: 'primary', onClick: function () {
+          var v = w.querySelector('#rp-name').value.trim();
+          if (!v) { Dialogs.toast('项目名称不能为空', true); return; }
+          var pn = document.getElementById('project-name');
+          Store.project.name = v;
+          if (pn) { pn.value = v; pn.dispatchEvent(new Event('change')); }
+          Store.autosave();
+          Dialogs.closeModal();
+          refresh();
+        }
+      }]);
+    };
+
     document.getElementById('btn-import').onclick = Dialogs.openImportSQL;
     document.getElementById('btn-gensql').onclick = function () { switchTab('sql'); };
     document.getElementById('btn-check').onclick = Dialogs.openCheck;
@@ -244,6 +554,7 @@
     document.getElementById('btn-save').onclick = function () {
       Store.saveToServer().then(function () {
         renderStatus();
+        Store.refreshProjects().then(function () { renderProjectSelect(); });
         Dialogs.toast('已保存到数据库（workbench.db）');
       }).catch(function () {
         renderStatus();
@@ -281,11 +592,60 @@
     });
     document.getElementById('dialect').addEventListener('change', function () {
       Store.project.dialect = this.value; Store.autosave();
+      // 方言变更同步服务端 projects 行（整库 PUT 也会带上，这里保证元信息即时一致）
+      if (Store.serverOnline) Store.updateProjectMeta({ dialect: this.value }).catch(function () { });
+    });
+    document.getElementById('project-name').addEventListener('change', function () {
+      if (!Store.serverOnline) return;
+      var cur = Store.projects.filter(function (p) { return p.id === Store.projectId; })[0];
+      if (cur && cur.name === this.value) return; // 未变化不请求
+      Store.updateProjectMeta({ name: this.value }).then(function () {
+        renderProjectSelect();
+      }).catch(function () { Dialogs.toast('项目名同步到服务端失败', true); });
     });
 
-    // 侧栏事件（委托）
+    // 顶栏：项目切换器
+    document.getElementById('project-select').addEventListener('change', function () {
+      var v = this.value;
+      if (v === '__new__') { renderProjectSelect(); openNewProject(); return; }
+      var id = parseInt(v, 10);
+      if (!id || id === Store.projectId) { renderProjectSelect(); return; }
+      switchProject(id);
+    });
+
+    // 侧栏视图切换（按分层 | 按业务目录）
+    document.querySelectorAll('.sidebar-toggle .seg-btn').forEach(function (b) {
+      b.onclick = function () { setSidebarView(b.dataset.view); };
+    });
+
+    // 侧栏事件（委托：模型卡片操作 + 目录树节点操作，两种视图共用）
     var sidebar = document.getElementById('sidebar');
     sidebar.addEventListener('click', function (e) {
+      // 分层视图：点击层标题折叠/展开该层
+      var lyHead = e.target.closest('[data-layer-toggle]');
+      if (lyHead) {
+        var lk = lyHead.dataset.layerToggle;
+        if (layerCollapsed[lk]) delete layerCollapsed[lk]; else layerCollapsed[lk] = true;
+        renderSidebar();
+        return;
+      }
+      var catBtn = e.target.closest('button[data-cat]');
+      if (catBtn) {
+        e.stopPropagation();
+        var node = Store.findCatalogNode(catBtn.dataset.node);
+        if (!node) return;
+        if (catBtn.dataset.cat === 'add') openCatalogNodeDialog('child', node);
+        else if (catBtn.dataset.cat === 'rename') openCatalogNodeDialog('rename', node);
+        else if (catBtn.dataset.cat === 'del') confirmDeleteNode(node);
+        return;
+      }
+      var caret = e.target.closest('[data-toggle]');
+      if (caret) {
+        var nid = caret.dataset.toggle;
+        if (catCollapsed[nid]) delete catCollapsed[nid]; else catCollapsed[nid] = true;
+        renderCatalogView();
+        return;
+      }
       var btn = e.target.closest('button[data-act]');
       if (btn) {
         e.stopPropagation();
@@ -302,6 +662,7 @@
       if (item) {
         Store.selectedId = item.dataset.id;
         renderSidebar();
+        renderCatalogView();
         switchTab(currentTab);
       }
     });

@@ -121,7 +121,7 @@
   }
 
   // ================= SVG 渲染 =================
-  var LAYER_COLORS = { ods: '#3672f0', dim: '#0aa2c0', dwd: '#159a62', dws: '#d97e00', ads: '#8256f0' };
+  var LAYER_COLORS = { ods: '#3b82f6', dim: '#06b6d4', dwd: '#10b981', dws: '#f59e0b', ads: '#8b5cf6' };
 
   function svgEl(tag, attrs) {
     var el = document.createElementNS('http://www.w3.org/2000/svg', tag);
@@ -150,7 +150,10 @@
     var totalH = Math.max(y, 40 + targetBoxHeight()) + 40;
     var totalW = TGT_X + BOX_W + 60;
 
-    var svg = svgEl('svg', { viewBox: '0 0 ' + totalW + ' ' + totalH, width: totalW, height: totalH });
+    // SVG 尺寸 = 可视容器（画布即视口），内容靠 viewport transform 适应，避免内容缩放后与画布错位
+    var host = container.parentElement || container;
+    var vw = host.clientWidth || totalW, vh = host.clientHeight || totalH;
+    var svg = svgEl('svg', { width: vw, height: vh, style: 'overflow:visible' });
     var g = svgEl('g', { class: 'viewport' });
     svg.appendChild(g);
     container.appendChild(svg);
@@ -247,7 +250,9 @@
   }
 
   // 模型级血缘图（全局）
-  function renderModelLineage(container, graph, onSelectModel) {
+  // opts: { getLayout: () => ({ [modelId]: {x,y} }) | null, saveLayout: (layout) => void }
+  function renderModelLineage(container, graph, onSelectModel, opts) {
+    opts = opts || {};
     container.innerHTML = '';
     var layers = ['ods', 'dim', 'dwd', 'dws', 'ads'];
     var COL_W = 280, BOX_W = 220, BOX_H = 56, GAP_Y = 26, TOP = 40, GAP_X = 60;
@@ -260,7 +265,10 @@
     var totalW = layers.length * COL_W + 80;
     var totalH = TOP + Math.max(maxRows, 1) * (BOX_H + GAP_Y) + 60;
 
-    var svg = svgEl('svg', { viewBox: '0 0 ' + totalW + ' ' + totalH, width: totalW, height: totalH });
+    // SVG 尺寸 = 可视容器（画布即视口），同字段级图
+    var host = container.parentElement || container;
+    var vw = host.clientWidth || totalW, vh = host.clientHeight || totalH;
+    var svg = svgEl('svg', { width: vw, height: vh, style: 'overflow:visible' });
     var g = svgEl('g', { class: 'viewport' });
     svg.appendChild(g);
     container.appendChild(svg);
@@ -272,46 +280,135 @@
       g.appendChild(t);
     });
 
+    // 节点位置：默认按层分列；已保存的自定义布局（project.layout）优先
+    // 加载时同样钳制在画布范围内（防御导入的异常坐标 / 旧版本拖出的越界布局）
+    var MAXX = totalW - BOX_W, MAXY = totalH - BOX_H;
+    function clampP(v, max) { return Math.max(0, Math.min(v, max)); }
+    var saved = (typeof opts.getLayout === 'function' && opts.getLayout()) || {};
     var pos = {};
     layers.forEach(function (ly, ci) {
       var idx = 0;
       graph.nodes.filter(function (n) { return n.layer === ly; }).forEach(function (n) {
-        var x = 40 + ci * COL_W, by = TOP + idx * (BOX_H + GAP_Y);
-        pos[n.id] = { x: x, y: by };
+        var l = saved[n.id];
+        pos[n.id] = (l && typeof l.x === 'number' && typeof l.y === 'number')
+          ? { x: clampP(Math.round(l.x), MAXX), y: clampP(Math.round(l.y), MAXY) }
+          : { x: 40 + ci * COL_W, y: TOP + idx * (BOX_H + GAP_Y) };
         idx++;
-        var color = LAYER_COLORS[ly] || '#64748b';
-        var box = svgEl('g', { class: 'ln-mbox', 'data-id': n.id, cursor: 'pointer' });
-        box.appendChild(svgEl('rect', { x: x, y: by, width: BOX_W, height: BOX_H, rx: 8, style: 'fill:var(--panel)', stroke: color, 'stroke-width': 1.5 }));
-        box.appendChild(svgEl('rect', { x: x, y: by, width: 4, height: BOX_H, rx: 2, fill: color }));
-        var t1 = svgEl('text', { x: x + 14, y: by + 22, 'font-size': 12.5, 'font-weight': 600, style: 'fill:var(--text)' });
-        t1.textContent = n.name;
-        box.appendChild(t1);
-        var t2 = svgEl('text', { x: x + 14, y: by + 40, 'font-size': 11, style: 'fill:var(--text-2)' });
-        t2.textContent = (n.cnName || '') + (n.fieldCount ? ' · ' + n.fieldCount + ' 字段' : '');
-        box.appendChild(t2);
-        if (onSelectModel) box.addEventListener('click', function () { onSelectModel(n.id); });
-        g.appendChild(box);
       });
     });
 
+    function edgePath(a, b) {
+      var x1 = a.x + BOX_W, y1 = a.y + BOX_H / 2, x2 = b.x, y2 = b.y + BOX_H / 2;
+      return 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + 40) + ' ' + y1 + ', ' + (x2 - 40) + ' ' + y2 + ', ' + x2 + ' ' + y2;
+    }
+
+    // 连线（建索引：nodeId -> 相关边记录，拖动时按需刷新路径）
+    var edgesG = svgEl('g', { class: 'ln-edges' });
+    g.appendChild(edgesG);
+    var edgeIndex = {};
     graph.edges.forEach(function (e) {
       var a = pos[e.from], b = pos[e.to];
       if (!a || !b) return;
-      var x1 = a.x + BOX_W, y1 = a.y + BOX_H / 2, x2 = b.x, y2 = b.y + BOX_H / 2;
       var path = svgEl('path', {
-        d: 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + 40) + ' ' + y1 + ', ' + (x2 - 40) + ' ' + y2 + ', ' + x2 + ' ' + y2,
+        d: edgePath(a, b),
         fill: 'none', style: 'stroke:var(--hairline-strong)', 'stroke-width': 1.3, class: 'ln-edge'
       });
-      g.insertBefore(path, g.firstChild);
+      edgesG.appendChild(path);
+      var rec = { path: path, from: e.from, to: e.to };
+      (edgeIndex[e.from] || (edgeIndex[e.from] = [])).push(rec);
+      if (e.to !== e.from) (edgeIndex[e.to] || (edgeIndex[e.to] = [])).push(rec);
+    });
+    function refreshEdges(nodeId) {
+      (edgeIndex[nodeId] || []).forEach(function (r) {
+        r.path.setAttribute('d', edgePath(pos[r.from], pos[r.to]));
+      });
+    }
+
+    // 节点盒子：transform 定位，支持拖拽（空白处拖动仍为画布平移）
+    layers.forEach(function (ly) {
+      graph.nodes.filter(function (n) { return n.layer === ly; }).forEach(function (n) {
+        var color = LAYER_COLORS[ly] || '#64748b';
+        var p = pos[n.id];
+        var box = svgEl('g', { class: 'ln-mbox', 'data-id': n.id, transform: 'translate(' + p.x + ',' + p.y + ')', cursor: 'pointer' });
+        box.appendChild(svgEl('rect', { width: BOX_W, height: BOX_H, rx: 8, style: 'fill:var(--panel)', stroke: color, 'stroke-width': 1.5 }));
+        box.appendChild(svgEl('rect', { width: 4, height: BOX_H, rx: 2, fill: color }));
+        var t1 = svgEl('text', { x: 14, y: 22, 'font-size': 12.5, 'font-weight': 600, style: 'fill:var(--text)' });
+        t1.textContent = n.name;
+        box.appendChild(t1);
+        var t2 = svgEl('text', { x: 14, y: 40, 'font-size': 11, style: 'fill:var(--text-2)' });
+        t2.textContent = (n.cnName || '') + (n.fieldCount ? ' · ' + n.fieldCount + ' 字段' : '');
+        box.appendChild(t2);
+
+        attachNodeDrag(svg, box, n, pos, refreshEdges, opts, { maxX: MAXX, maxY: MAXY });
+
+        if (onSelectModel) box.addEventListener('click', function () {
+          if (box._skipClick) { box._skipClick = false; return; }
+          onSelectModel(n.id);
+        });
+        g.appendChild(box);
+      });
     });
 
     attachPanZoom(svg, g, totalW, totalH);
   }
 
-  // SVG 平移缩放
+  // 单节点拖拽：移动时实时更新盒子与相连连线；松手保存布局（仅本地自动保存，不触发全页重渲染）
+  // bounds: 可拖动范围（钳制在画布 viewBox 内，防止拖出可视区域后"消失"）
+  function attachNodeDrag(svg, box, n, pos, refreshEdges, opts, bounds) {
+    box.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      e.stopPropagation(); // 不触发画布平移
+      e.preventDefault();
+      var view = (typeof svg._getView === 'function' && svg._getView()) || { s: 1 };
+      var scale = view.s || 1;
+      var sx = e.clientX, sy = e.clientY;
+      var base = { x: pos[n.id].x, y: pos[n.id].y };
+      var moved = false;
+      function onMove(ev) {
+        var dx = (ev.clientX - sx) / scale, dy = (ev.clientY - sy) / scale;
+        if (!moved && Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) > 4) moved = true;
+        if (!moved) return;
+        var nx = Math.max(0, Math.min(base.x + dx, bounds.maxX));
+        var ny = Math.max(0, Math.min(base.y + dy, bounds.maxY));
+        pos[n.id] = { x: Math.round(nx), y: Math.round(ny) };
+        box.setAttribute('transform', 'translate(' + pos[n.id].x + ',' + pos[n.id].y + ')');
+        refreshEdges(n.id);
+      }
+      function onUp() {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        if (!moved) return;
+        box._skipClick = true; // 拖动结束屏蔽紧随的 click（选中）
+        if (typeof opts.saveLayout === 'function') {
+          var lay = {};
+          Object.keys(pos).forEach(function (id) { lay[id] = { x: pos[id].x, y: pos[id].y }; });
+          opts.saveLayout(lay);
+        }
+      }
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+  }
+
+  // SVG 平移缩放：初始/重置时自动适应窗口（不同分辨率/小窗口下整图可见，不会被裁切）
+  // SVG 元素尺寸 = 可视容器；窗口尺寸变化时自动重新适应（模块级单监听，随最新一张图更新）
+  var activeFit = null;
   function attachPanZoom(svg, g, w, h) {
     var vx = 0, vy = 0, scale = 1;
     function apply() { g.setAttribute('transform', 'translate(' + vx + ',' + vy + ') scale(' + scale + ')'); }
+    function fitView() {
+      var host = svg.closest('.lin-canvas-wrap') || svg.parentElement || svg;
+      var cw = host.clientWidth || w, ch = host.clientHeight || h;
+      var s = Math.min(cw / w, ch / h, 1);
+      if (s < 0.5) { s = 0.5; vx = Math.round((cw - w * s) / 2); vy = 0; } // 超大图保底 0.5，横向居中、顶部对齐，其余靠平移
+      else { vx = Math.round((cw - w * s) / 2); vy = Math.round((ch - h * s) / 2); }
+      scale = s; apply();
+    }
+    activeFit = fitView;
+    if (!attachPanZoom._rzInit) {
+      attachPanZoom._rzInit = true;
+      window.addEventListener('resize', function () { if (activeFit) activeFit(); });
+    }
     var dragging = false, lx = 0, ly = 0, moved = false;
     svg.addEventListener('mousedown', function (e) { dragging = true; moved = false; lx = e.clientX; ly = e.clientY; });
     window.addEventListener('mousemove', function (e) {
@@ -329,7 +426,10 @@
       vy = e.offsetY - (e.offsetY - vy) * (ns / scale);
       scale = ns; apply();
     }, { passive: false });
-    svg._resetView = function () { vx = 0; vy = 0; scale = 1; apply(); };
+    svg._getView = function () { return { x: vx, y: vy, s: scale }; };
+    svg._fitView = fitView;
+    svg._resetView = fitView;
+    fitView(); // 初始渲染即适应窗口
   }
 
   return {

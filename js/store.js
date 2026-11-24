@@ -1,40 +1,220 @@
 /**
- * 数据存储：模型 CRUD、localStorage 自动保存、服务端 project.json 持久化
+ * 数据存储：多项目管理、模型 CRUD、目录树缓存、localStorage 自动保存、服务端持久化
  */
 (function (root) {
   'use strict';
 
   var LS_KEY = 'dw-workbench-project';
+  var LS_PROJECT_ID_KEY = 'dw-workbench-project-id';
 
   var Store = {
     project: null,
     selectedId: null,
     serverOnline: false,
+    projectId: 1,      // 当前项目 id（服务端多项目）
+    projects: [],      // 项目列表缓存 [{id,name,dialect,updatedAt,modelCount}]
+    catalog: [],       // 当前项目业务目录树（服务端组装）
     listeners: [],
+    saveState: 'idle', // idle | saving | saved | error | local
+    saveStateMsg: '',
+    lastSavedAt: '',
+    saveStateListeners: [],
 
     onChange: function (fn) { this.listeners.push(fn); },
     emit: function () { this.listeners.forEach(function (fn) { fn(); }); },
+    onSaveState: function (fn) { this.saveStateListeners.push(fn); },
 
     newId: function () { return 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7); },
 
+    // 当前项目的查询串（/api/project、/api/import/excel 等使用）
+    apiProjectId: function () { return '?projectId=' + this.projectId; },
+
     // ---------- 加载 ----------
+    // load：拉项目列表 → 选定项目（localStorage 记忆 > 项目1 > 第一个）→ 加载项目与目录
     load: function (cb) {
       var self = this;
-      fetch('/api/project').then(function (r) {
+      fetch('/api/projects').then(function (r) { if (!r.ok) throw new Error('http ' + r.status); return r.json(); }).then(function (d) {
+        self.serverOnline = true;
+        self.projects = d.projects || [];
+        var saved = null;
+        try { saved = parseInt(localStorage.getItem(LS_PROJECT_ID_KEY), 10); } catch (e) { }
+        var target = null;
+        if (saved && self.projects.some(function (p) { return p.id === saved; })) target = saved;
+        else if (self.projects.some(function (p) { return p.id === 1; })) target = 1;
+        else if (self.projects.length) target = self.projects[0].id;
+        else target = 1;
+        self.loadProject(target, cb, 'server');
+      }).catch(function () {
+        self.serverOnline = false;
+        self.project = self.fromLocal() || clone(root.SAMPLE);
+        self.normalize();
+        cb && cb('local');
+      });
+    },
+
+    // loadProject：切换/加载指定项目（含目录树），projectId 记入 localStorage
+    loadProject: function (id, cb, source) {
+      var self = this;
+      // 切换前清掉上一个项目的待写入定时器，避免用新数据覆盖旧项目
+      if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+      this.projectId = id;
+      try { localStorage.setItem(LS_PROJECT_ID_KEY, String(id)); } catch (e) { }
+      return fetch('/api/project?projectId=' + id).then(function (r) {
         if (r.status === 404) return null;
         if (!r.ok) throw new Error('http ' + r.status);
         return r.json();
       }).then(function (data) {
         self.serverOnline = true;
         if (data && data.models) { self.project = data; }
-        else { self.project = self.fromLocal() || clone(root.SAMPLE); self.saveToServer(); }
+        else {
+          // 404（项目行缺失，如已被删除）：用项目列表里的元信息给一个空项目，不再回退旧的单项目浏览器缓存
+          var meta = null;
+          self.projects.forEach(function (p) { if (p.id === id) meta = p; });
+          self.project = { name: (meta && meta.name) || '未命名项目', dialect: (meta && meta.dialect) || 'hive', models: [] };
+        }
         self.normalize();
-        cb && cb('server');
+        self.selectedId = self.project.models.length ? self.project.models[0].id : null;
+        return self.loadCatalog();
+      }).then(function () {
+        cb && cb(source || 'server');
       }).catch(function () {
         self.serverOnline = false;
         self.project = self.fromLocal() || clone(root.SAMPLE);
         self.normalize();
+        self.loadCatalogQuiet();
         cb && cb('local');
+      });
+    },
+
+    loadCatalog: function () {
+      var self = this;
+      return fetch('/api/catalog?projectId=' + this.projectId).then(function (r) { return r.json(); }).then(function (d) {
+        self.catalog = d.nodes || [];
+      }).catch(function () { self.catalog = []; });
+    },
+    loadCatalogQuiet: function () { this.catalog = []; },
+
+    // 项目列表刷新（新建/改名/删除后）
+    refreshProjects: function () {
+      var self = this;
+      return fetch('/api/projects').then(function (r) { return r.json(); }).then(function (d) {
+        self.projects = d.projects || [];
+      }).catch(function () { });
+    },
+
+    // ---------- 目录树辅助 ----------
+    // 按 id 查找目录节点
+    findCatalogNode: function (id, nodes) {
+      nodes = nodes || this.catalog;
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i].id === id) return nodes[i];
+        var hit = this.findCatalogNode(id, nodes[i].children || []);
+        if (hit) return hit;
+      }
+      return null;
+    },
+    // 收集节点及其全部后代 id（含自身；删除子树前用于本地解绑模型）
+    catalogSubtreeIds: function (id) {
+      var out = [id];
+      var node = this.findCatalogNode(id);
+      (function walk(nodes) {
+        (nodes || []).forEach(function (n) {
+          out.push(n.id);
+          walk(n.children || []);
+        });
+      })(node ? node.children : []);
+      return out;
+    },
+    // L2/L3 节点扁平列表（路径形如 "财务域 / 应收 / 发票"），供业务归属下拉
+    catalogFlat: function () {
+      var out = [];
+      (function walk(nodes, path) {
+        (nodes || []).forEach(function (n) {
+          var label = n.cnName || n.name;
+          var p = path.concat(label);
+          out.push({ id: n.id, level: n.level, name: n.name, cnName: n.cnName, path: p.join(' / ') });
+          walk(n.children || [], p);
+        });
+      })(this.catalog, []);
+      return out;
+    },
+
+    // ---------- 项目元信息 / 新建 ----------
+    // 顶栏项目名 / 方言变更 → 同步服务端 projects 行
+    updateProjectMeta: function (fields) {
+      var self = this;
+      return fetch('/api/projects/' + this.projectId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fields)
+      }).then(function (r) {
+        return r.json().then(function (d) {
+          if (!r.ok) throw new Error(d && d.error || ('http ' + r.status));
+          return d;
+        });
+      }).then(function (d) { self.refreshProjects(); return d; });
+    },
+    // 新建项目：POST 成功后刷新项目列表缓存，返回 {ok, project}
+    createProject: function (name, dialect) {
+      var self = this;
+      return fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, dialect: dialect })
+      }).then(function (r) {
+        return r.json().then(function (d) {
+          if (!r.ok) throw new Error(d && d.error || ('http ' + r.status));
+          return d;
+        });
+      }).then(function (d) { return self.refreshProjects().then(function () { return d; }); });
+    },
+
+    // ---------- 目录树 CRUD（服务端为准，改完重拉树并广播） ----------
+    createCatalogNode: function (parentId, level, name, cnName) {
+      var self = this;
+      return fetch('/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: this.projectId, parentId: parentId || '', level: level, name: name, cnName: cnName })
+      }).then(function (r) {
+        return r.json().then(function (d) {
+          if (!r.ok) throw new Error(d && d.error || ('http ' + r.status));
+          return d;
+        });
+      }).then(function (d) {
+        return self.loadCatalog().then(function () { self.emit(); return d; });
+      });
+    },
+    renameCatalogNode: function (id, name, cnName) {
+      var self = this;
+      return fetch('/api/catalog/' + encodeURIComponent(id), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, cnName: cnName })
+      }).then(function (r) {
+        return r.json().then(function (d) {
+          if (!r.ok) throw new Error(d && d.error || ('http ' + r.status));
+          return d;
+        });
+      }).then(function (d) {
+        return self.loadCatalog().then(function () { self.emit(); return d; });
+      });
+    },
+    deleteCatalogNode: function (id) {
+      var self = this;
+      var ids = this.catalogSubtreeIds(id); // 含自身，先算好（删除后树里就找不到了）
+      return fetch('/api/catalog/' + encodeURIComponent(id), { method: 'DELETE' }).then(function (r) {
+        return r.json().then(function (d) {
+          if (!r.ok) throw new Error(d && d.error || ('http ' + r.status));
+          return d;
+        });
+      }).then(function (d) {
+        // 服务端已把子树内模型的 catalog_id 置空，本地同步解绑（未保存的编辑不丢）
+        self.project.models.forEach(function (m) {
+          if (m.catalogId && ids.indexOf(String(m.catalogId)) >= 0) delete m.catalogId;
+        });
+        self.autosave();
+        return self.loadCatalog().then(function () { self.emit(); return d; });
       });
     },
 
@@ -54,21 +234,73 @@
     },
 
     // ---------- 保存 ----------
-    autosave: function () {
+    // 所有编辑（字段、分层、业务域绑定、结构增删）都会落两处：
+    //   1) localStorage 立即缓存（请求失败时也不丢当前会话）
+    //   2) 服务端 SQLite：防抖 500ms 合并后 PUT /api/project
+    // 历史 bug：编辑只写 localStorage，刷新时被服务端数据覆盖，表现为「绑定后又变回去」
+    _persistLocal: function () {
       try { localStorage.setItem(LS_KEY, JSON.stringify(this.project)); } catch (e) { }
     },
-    saveToServer: function () {
+    _setSaveState: function (state, msg) {
+      this.saveState = state;
+      this.saveStateMsg = msg || '';
+      if (state === 'saved') {
+        var d = new Date();
+        var p2 = function (n) { return ('0' + n).slice(-2); };
+        this.lastSavedAt = p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
+      }
+      this.saveStateListeners.forEach(function (fn) { try { fn(state, msg); } catch (e) { } });
+    },
+    autosave: function () {
+      this._persistLocal();
+      this.scheduleSave();
+    },
+    // 防抖：连续输入合并成一次 PUT
+    scheduleSave: function () {
+      if (!this.serverOnline || !this.project) return;
       var self = this;
-      this.autosave();
-      return fetch('/api/project', {
+      if (this._saveTimer) clearTimeout(this._saveTimer);
+      this._saveTimer = setTimeout(function () {
+        self._saveTimer = null;
+        self.flushSave().catch(function () { });
+      }, 300);
+    },
+    // 立即落库：结构变更、业务域绑定、切换项目、手动保存时调用。串行执行，期间变更排队重发。
+    flushSave: function () {
+      var self = this;
+      if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+      if (!this.serverOnline || !this.project) { this._setSaveState('local'); return Promise.resolve('local'); }
+      if (this._saving) { this._saveQueued = true; return this._saving; }
+      var pid = this.projectId;
+      var body = JSON.stringify(this.project, null, 2);
+      this._setSaveState('saving');
+      var req = fetch('/api/project?projectId=' + pid, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(this.project, null, 2)
+        body: body
       }).then(function (r) {
         if (!r.ok) throw new Error('http ' + r.status);
         self.serverOnline = true;
+        self._setSaveState('saved');
         return 'ok';
+      }, function (e) {
+        self._setSaveState('error', e && e.message);
+        throw e;
       });
+      this._saving = req.then(function (v) {
+        self._saving = null;
+        if (self._saveQueued) { self._saveQueued = false; return self.flushSave(); }
+        return v;
+      }, function (e) {
+        self._saving = null;
+        if (self._saveQueued) { self._saveQueued = false; self.flushSave().catch(function () { }); }
+        throw e;
+      });
+      return this._saving;
+    },
+    saveToServer: function () {
+      this._persistLocal();
+      return this.flushSave();
     },
 
     // ---------- 模型 CRUD ----------
@@ -157,6 +389,25 @@
   };
 
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
+
+  // 页面刷新/关闭时若还有未发出的待写入改动，用 keepalive 请求抢救一次
+  // （常规路径是 400ms 防抖 PUT；这里只覆盖「改完立即刷新」的窗口）
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('pagehide', function () {
+      if (!Store._saveTimer || !Store.project || !Store.serverOnline) return;
+      clearTimeout(Store._saveTimer);
+      Store._saveTimer = null;
+      Store._persistLocal();
+      try {
+        fetch('/api/project?projectId=' + Store.projectId, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Store.project),
+          keepalive: true
+        }).catch(function () { });
+      } catch (e) { }
+    });
+  }
 
   root.Store = Store;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

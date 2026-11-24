@@ -18,9 +18,13 @@ const { spawn } = require('child_process');
 const { DatabaseSync } = require('node:sqlite');
 
 const ROOT = __dirname;
-const DB_FILE = path.join(ROOT, 'workbench.db');
-const SNAPSHOT_FILE = path.join(ROOT, 'project.json');
+// 数据目录可用环境变量覆盖（Docker 挂载数据卷用），静态文件始终取应用目录
+const DATA_DIR = process.env.DW_DATA_DIR || ROOT;
+fs.mkdirSync(DATA_DIR, { recursive: true }); // 数据目录不存在时自动创建（Docker 卷/自定义路径）
+const DB_FILE = path.join(DATA_DIR, 'workbench.db');
+const SNAPSHOT_FILE = path.join(DATA_DIR, 'project.json');
 const PORT = parseInt(process.env.PORT || '8130', 10);
+const HOST = process.env.HOST || '127.0.0.1';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -588,8 +592,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 migrateIfNeeded();
-server.listen(PORT, '127.0.0.1', () => {
-  console.log('[dw-workbench] 数据建模工作台已启动： http://127.0.0.1:' + PORT);
+server.listen(PORT, HOST, () => {
+  console.log('[dw-workbench] 数据建模工作台已启动： http://' + (HOST === '0.0.0.0' ? '127.0.0.1' : HOST) + ':' + PORT);
   console.log('[dw-workbench] 数据库： ' + DB_FILE + '（SQLite/WAL）');
   console.log('[dw-workbench] 快照： ' + SNAPSHOT_FILE + '（每次保存自动导出，供 DSH/文件工作流使用）');
 });
