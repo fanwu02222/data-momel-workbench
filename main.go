@@ -483,17 +483,28 @@ func main() {
 		displayHost = "127.0.0.1"
 	}
 
+	// 端口先行监听：被占用时自动 +1 重试（最多 20 个），本地工具友好行为（Jupyter 式）
+	basePort, _ := strconv.Atoi(port)
+	ln, err := net.Listen("tcp", host+":"+port)
+	tried := 0
+	for err != nil && tried < 20 {
+		tried++
+		fmt.Println("[dw-workbench] 端口 " + port + " 已被占用，尝试 " + strconv.Itoa(basePort+tried) + " …")
+		port = strconv.Itoa(basePort + tried)
+		ln, err = net.Listen("tcp", host+":"+port)
+	}
+	if err != nil {
+		fatalErr("监听端口失败（连续 20 个端口均不可用） "+host+":"+strconv.Itoa(basePort), err)
+	}
+
 	fmt.Println("[dw-workbench] 数据建模工作台已启动： http://" + displayHost + ":" + port)
+	if tried > 0 {
+		fmt.Println("[dw-workbench] 提示：默认端口被占用，本次使用 " + port + "（浏览器已打开正确地址）")
+	}
 	fmt.Println("[dw-workbench] 数据库： " + filepath.Join(dataDir, "workbench.db") + "（SQLite/WAL）")
 	fmt.Println("[dw-workbench] 快照： " + filepath.Join(dataDir, "project.json") + "（每次保存自动导出，供 DSH/文件工作流使用）")
 	if serveFromDisk {
 		fmt.Println("[dw-workbench] 开发模式： 前端从磁盘加载（" + appRoot + "）")
-	}
-
-	// 端口先行监听：失败（如被占用）给出可见错误，而不是静默退出
-	ln, err := net.Listen("tcp", host+":"+port)
-	if err != nil {
-		fatalErr("监听端口失败（端口被占用或无权限） "+host+":"+port, err)
 	}
 
 	go func() {

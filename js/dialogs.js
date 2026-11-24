@@ -208,7 +208,8 @@
   }
 
   // ================= DSH 任务 =================
-  var API_NOTE = '项目数据读取：curl -s http://127.0.0.1:8130/api/project（返回 JSON：{name, dialect, models:[...]}）。修改完成后用 PUT 写回：curl -X PUT -H "Content-Type: application/json" -d @新文件.json http://127.0.0.1:8130/api/project（body 必须是完整项目 JSON，服务端会整体替换并事务入库）。\n';
+  var API_BASE = 'http://127.0.0.1:' + (typeof location !== 'undefined' && location.port ? location.port : '8130');
+  var API_NOTE = '项目数据读取：curl -s ' + API_BASE + '/api/project（返回 JSON：{name, dialect, models:[...]}）。修改完成后用 PUT 写回：curl -X PUT -H "Content-Type: application/json" -d @新文件.json ' + API_BASE + '/api/project（body 必须是完整项目 JSON，服务端会整体替换并事务入库）。\n';
 
   var DSH_TEMPLATES = {
     fill_comments: {
@@ -275,7 +276,7 @@
   function openDSH() {
     var wrap = el('div', 'dsh-dialog');
     wrap.appendChild(el('p', 'hint',
-      '复杂或批量的工作可以交给 <b>DSH 智能体</b>在本项目目录执行：它能通过 API 直接读写项目数据（SQLite 存储），执行脚本与生成文档。<br>选择任务模板 → 复制提示词 → 在终端运行 <span class="mono">dsh</span>（或使用现有 DSH 会话）粘贴发送即可。<br>数据读取：<span class="mono">curl http://127.0.0.1:8130/api/project</span>　写回：<span class="mono">PUT</span> 同地址（完整 JSON）'));
+      '复杂或批量的工作可以交给 <b>DSH 智能体</b>在本项目目录执行：它能通过 API 直接读写项目数据（SQLite 存储），执行脚本与生成文档。<br>选择任务模板 → 复制提示词 → 在终端运行 <span class="mono">dsh</span>（或使用现有 DSH 会话）粘贴发送即可。<br>数据读取：<span class="mono">curl ' + API_BASE + '/api/project</span>　写回：<span class="mono">PUT</span> 同地址（完整 JSON）'));
     var sel = el('select', 'dsh-select');
     Object.keys(DSH_TEMPLATES).forEach(function (k, i) {
       var o = el('option');
