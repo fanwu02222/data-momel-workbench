@@ -1,0 +1,44 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: 构建多平台二进制
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o dist/dw-workbench-go .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/dw-workbench-go-windows.exe .
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/dw-workbench-go-darwin-amd64 .
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/dw-workbench-go-darwin-arm64 .
+
+      - name: 打包
+        run: |
+          cd dist
+          zip dw-workbench-go-${GITHUB_REF_NAME}-linux-amd64.zip dw-workbench-go ../LICENSE
+          zip dw-workbench-go-${GITHUB_REF_NAME}-windows-amd64.zip dw-workbench-go-windows.exe ../LICENSE
+          zip dw-workbench-go-${GITHUB_REF_NAME}-darwin-amd64.zip dw-workbench-go-darwin-amd64 ../LICENSE
+          zip dw-workbench-go-${GITHUB_REF_NAME}-darwin-arm64.zip dw-workbench-go-darwin-arm64 ../LICENSE
+          cd ..
+          git archive --format=zip -o dist/dw-workbench-${GITHUB_REF_NAME}.zip HEAD
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          body_path: RELEASE-NOTES-${{ github.ref_name }}.md
+          files: dist/*.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
