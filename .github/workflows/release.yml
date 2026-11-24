@@ -38,7 +38,17 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           body_path: RELEASE-NOTES-${{ github.ref_name }}.md
-          files: dist/*.zip
+          files: |
+            dist/dw-workbench-go-${{ github.ref_name }}-*.zip
+            dist/dw-workbench-${{ github.ref_name }}.zip
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 清理与本次版本无关的附件
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' \
+            | grep -v "$GITHUB_REF_NAME" \
+            | xargs -r -I{} gh release delete-asset "$GITHUB_REF_NAME" "{}" --yes
