@@ -697,6 +697,11 @@ func dbCreateProject(name, dialect, kind string) (projectInfo, error) {
 	if kind != "oltp" {
 		kind = "olap"
 	}
+	// 项目名唯一：重名会导致下拉无法区分、示例幂等判断失效
+	var dup int
+	if err := db.QueryRow("SELECT COUNT(*) FROM projects WHERE name = ?", name).Scan(&dup); err == nil && dup > 0 {
+		return projectInfo{}, errBadRequest("已存在同名项目：" + name)
+	}
 	extra := "{}"
 	if kind == "oltp" {
 		extra = `{"kind":"oltp"}`
@@ -730,7 +735,15 @@ func dbUpdateProject(id int64, fields map[string]any) (projectInfo, error) {
 		return projectInfo{}, err
 	}
 	if v, has := fields["name"]; has && v != nil {
-		p.name = jsOr(v, p.name)
+		newName := jsOr(v, p.name)
+		if newName != p.name {
+			// 改名也要保持唯一（不与其它项目撞名）
+			var dup int
+			if err := db.QueryRow("SELECT COUNT(*) FROM projects WHERE name = ? AND id <> ?", newName, id).Scan(&dup); err == nil && dup > 0 {
+				return projectInfo{}, errBadRequest("已存在同名项目：" + newName)
+			}
+		}
+		p.name = newName
 	}
 	if v, has := fields["dialect"]; has && v != nil {
 		p.dialect = jsOr(v, p.dialect)

@@ -1,0 +1,34 @@
+{
+  "customCols": {
+    "field": [],
+    "model": []
+  },
+  "dialect": "mysql",
+  "kind": "oltp",
+  "layout": {
+    "m_mwufrp8j_svvg6": {
+      "x": 0,
+      "y": 0
+    }
+  },
+  "models": [
+    {
+      "cnName": "",
+      "createdAt": "2026-11-24T08:32:02.711Z",
+      "desc": "",
+      "fields": [],
+      "groupBy": "",
+      "id": "m_mwufrp8j_svvg6",
+      "indexes": [],
+      "layer": "entity",
+      "name": "",
+      "notes": "",
+      "partition": [],
+      "source": "",
+      "sources": [],
+      "where": ""
+    }
+  ],
+  "name": "测试项目1",
+  "updatedAt": "2026-11-24T08:31:56.803Z"
+}

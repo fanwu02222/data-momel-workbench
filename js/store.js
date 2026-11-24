@@ -105,6 +105,55 @@
       }).catch(function () { });
     },
 
+    // 安装 OLTP 示例项目（幂等）：新建项目 → 建目录树 → 写实体（挂目录）→ 刷新列表
+    // fresh=true 时不弹确认（全新库首启自动补装用）
+    installOtlpSample: function (fresh) {
+      var self = this;
+      var NAME = '电商业务库（示例）';
+      if (this.projects.some(function (p) { return p.name === NAME; })) {
+        return Promise.resolve({ skipped: true });
+      }
+      return this.createProject(NAME, 'mysql', 'oltp').then(function (d) {
+        var pid = d.project.id;
+        var s = JSON.parse(JSON.stringify(root.OLTP_SAMPLE));
+        // 逐个建目录节点（父先子后），记录 key → 真实 id
+        var keyMap = {};
+        var chain = Promise.resolve();
+        s.catalog.forEach(function (c) {
+          chain = chain.then(function () {
+            return fetch('/api/catalog', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ projectId: pid, parentId: c.parent ? keyMap[c.parent] : '', level: c.level, name: c.name, cnName: c.cnName })
+            }).then(function (r) {
+              return r.json().then(function (nd) {
+                if (!r.ok) throw new Error(nd && nd.error || 'catalog');
+                keyMap[c.key] = nd.node.id;
+              });
+            });
+          });
+        });
+        return chain.then(function () {
+          var body = { name: s.name, dialect: s.dialect, kind: 'oltp', models: s.models.map(function (m) {
+            var mm = JSON.parse(JSON.stringify(m));
+            if (m.catalogKey && keyMap[m.catalogKey]) mm.catalogId = keyMap[m.catalogKey];
+            delete mm.catalogKey;
+            return mm;
+          }) };
+          return fetch('/api/project?projectId=' + pid, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+        }).then(function (r) {
+          if (!r.ok) throw new Error('http ' + r.status);
+          return self.refreshProjects();
+        }).then(function () {
+          return { id: pid, fresh: !!fresh };
+        });
+      });
+    },
+
     // ---------- 目录树辅助 ----------
     // 按 id 查找目录节点
     findCatalogNode: function (id, nodes) {
@@ -157,6 +206,34 @@
         });
       }).then(function (d) { self.refreshProjects(); return d; });
     },
+    // 指定项目的元信息更新（管理弹窗：改名非当前项目）
+    updateProjectMetaFor: function (pid, fields) {
+      var self = this;
+      return fetch('/api/projects/' + pid, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fields)
+      }).then(function (r) {
+        return r.json().then(function (d) {
+          if (!r.ok) throw new Error(d && d.error || ('http ' + r.status));
+          return d;
+        });
+      }).then(function (d) { return self.refreshProjects().then(function () { return d; }); });
+    },
+
+    // 删除项目（级联删模型/目录），刷新列表缓存
+    deleteProject: function (id) {
+      var self = this;
+      return fetch('/api/projects/' + id, { method: 'DELETE' }).then(function (r) {
+        return r.json().then(function (d) {
+          if (!r.ok) throw new Error(d && d.error || ('http ' + r.status));
+          return d;
+        });
+      }).then(function (d) {
+        return self.refreshProjects().then(function () { return d; });
+      });
+    },
+
     // 新建项目：POST 成功后刷新项目列表缓存，返回 {ok, project}（kind: 'oltp'|'olap'，缺省 olap）
     createProject: function (name, dialect, kind) {
       var self = this;

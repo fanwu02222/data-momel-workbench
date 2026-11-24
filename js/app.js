@@ -287,6 +287,7 @@
     });
     if (!Store.projects.length) h.push('<option value="' + Store.projectId + '">项目 ' + Store.projectId + '</option>');
     h.push('<option value="__new__">＋ 新建项目…</option>');
+    h.push('<option value="__manage__">⚙ 管理项目…</option>');
     sel.innerHTML = h.join('');
   }
 
@@ -346,6 +347,65 @@
         }).catch(function (e) { Dialogs.toast('创建项目失败：' + e.message, true); });
       }
     }]);
+  }
+
+  // 管理项目：列出全部项目，支持行内改名与删除（无需切换当前项目）
+  function openManageProjects() {
+    function rowHTML() {
+      var cur = Store.projectId;
+      var only = Store.projects.length <= 1;
+      return Store.projects.map(function (p) {
+        var isCur = p.id === cur;
+        return '<tr data-pid="' + p.id + '" data-pname="' + esc(p.name) + '">' +
+          '<td class="mono">' + p.id + '</td>' +
+          '<td><input class="mg-name col-input" value="' + esc(p.name) + '"' + (isCur ? ' title="当前项目"' : '') + '></td>' +
+          '<td>' + (p.kind === 'oltp' ? 'OLTP' : 'OLAP') + '</td>' +
+          '<td class="mono">' + (p.modelCount || 0) + '</td>' +
+          '<td>' + (isCur ? '<span class="mg-cur">当前</span>' : '') + '</td>' +
+          '<td class="mg-ops">' +
+          '<button class="btn small" data-mg="rename" data-pid="' + p.id + '">保存名</button>' +
+          '<button class="btn small danger"' + (only ? ' disabled title="至少保留一个项目"' : ' data-mg="del" data-pid="' + p.id + '"') + '>删除</button>' +
+          '</td></tr>';
+      }).join('');
+    }
+    var wrap = document.createElement('div');
+    wrap.innerHTML =
+      '<p class="hint small">改名直接编辑后点「保存名」；删除会连同该项目全部模型与业务目录一并移除（不可恢复）。</p>' +
+      '<table class="mg-table"><thead><tr><th>ID</th><th>项目名称</th><th>类型</th><th>模型</th><th></th><th>操作</th></tr></thead>' +
+      '<tbody id="mg-rows">' + rowHTML() + '</tbody></table>';
+    Dialogs.openModal('管理项目', wrap, [{ label: '关闭', cls: '' }]);
+    wrap.querySelector('#mg-rows').addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-mg]');
+      if (!btn || btn.disabled) return;
+      var pid = parseInt(btn.dataset.pid, 10);
+      var row = wrap.querySelector('tr[data-pid="' + pid + '"]');
+      if (btn.dataset.mg === 'rename') {
+        var v = row.querySelector('.mg-name').value.trim();
+        if (!v) { Dialogs.toast('项目名称不能为空', true); return; }
+        Store.updateProjectMetaFor(pid, { name: v }).then(function () {
+          Dialogs.toast('已改名：' + v);
+          if (pid === Store.projectId) { Store.project.name = v; var pn = document.getElementById('project-name'); if (pn) pn.value = v; Store.autosave(); }
+          wrap.querySelector('#mg-rows').innerHTML = rowHTML();
+          renderProjectSelect();
+        }).catch(function (err) { Dialogs.toast(err.message || '改名失败', true); });
+      } else if (btn.dataset.mg === 'del') {
+        var meta = Store.projects.filter(function (p) { return p.id === pid; })[0];
+        if (!confirm('确定删除项目「' + (meta ? meta.name : pid) + '」？\n其 ' + (meta ? meta.modelCount : '?') + ' 个模型与业务目录将被一并删除，不可恢复！')) return;
+        Store.deleteProject(pid).then(function () {
+          Dialogs.toast('已删除项目「' + (meta ? meta.name : pid) + '」');
+          if (pid === Store.projectId) {
+            // 删的是当前项目：切到剩余的第一个
+            var left = Store.projects.filter(function (p) { return p.id !== pid; });
+            if (left.length) {
+              Store.loadProject(left[0].id, function () { catCollapsed = {}; App.refresh(); renderProjectSelect(); });
+            }
+          } else {
+            wrap.querySelector('#mg-rows').innerHTML = rowHTML();
+            renderProjectSelect();
+          }
+        }).catch(function (err) { Dialogs.toast(err.message || '删除失败', true); });
+      }
+    });
   }
 
   // ---------- SQL 预览 ----------
@@ -453,6 +513,41 @@
         warnBox.innerHTML = '';
         return;
       }
+      root.ER_HOOKS = {
+        afterRelationChange: function () {
+          Store.flushSave().catch(function () { }); // 关系是显式操作，立即落库
+          renderLineagePane(); // 重渲染 ER（新连线/标记）
+          renderCatalogView();
+        },
+        getModelNames: function () { return Store.getModels().map(function (m) { return m.name; }); },
+        createJoinEntity: function (name, aName, aPk, bName, bPk) {
+          var m = Store.newModel('entity');
+          m.name = name;
+          m.cnName = '中间表（' + aName + ' × ' + bName + '）';
+          m.desc = 'N:N 关系中间表（由 ER 图自动生成）';
+          m.fields = [
+            { name: 'id', type: 'bigint', comment: '主键', pk: true, nullable: false },
+            { name: aName + '_id', type: 'bigint', comment: '关联 ' + aName, fk: aName + '.' + aPk, nullable: false },
+            { name: bName + '_id', type: 'bigint', comment: '关联 ' + bName, fk: bName + '.' + bPk, nullable: false }
+          ];
+          m.indexes = [
+            { name: 'idx_' + aName + '_id', fields: [aName + '_id'], unique: false },
+            { name: 'idx_' + bName + '_id', fields: [bName + '_id'], unique: false }
+          ];
+          Store.flushSave().catch(function () { });
+          renderLineagePane();
+          renderCatalogView();
+          Dialogs.toast('已生成中间表「' + name + '」（两条 N:1 外键构成 N:N）');
+        },
+        removeRelation: function (model, field) {
+          if (!confirm('删除外键关系：' + (model.name || '?') + '.' + (field.name || '?') + ' → ' + (field.fk || '?') + ' ？')) return;
+            delete field.fk;
+            Store.flushSave().catch(function () { });
+            renderLineagePane();
+            renderCatalogView();
+            Dialogs.toast('已删除关系');
+        }
+      };
       var r = root.ER.renderER(canvas, Store.project, {
         catalog: Store.catalog,
         getLayout: function () { return Store.project.layout || null; },
@@ -671,6 +766,25 @@
     };
     document.getElementById('btn-import-json').onclick = Dialogs.importJSON;
     document.getElementById('btn-import-excel').onclick = Dialogs.importExcel;
+    var btnSampleOltp = document.getElementById('btn-sample-oltp');
+    if (btnSampleOltp) btnSampleOltp.onclick = function () {
+      Dialogs.openModal('加载 OLTP 示例（业务库）', (function () {
+        var w = document.createElement('div');
+        w.innerHTML = '<p>将<b>新建</b>一个「电商业务库（示例）」项目：5 个实体（部门/用户/商品/订单/明细）+ 外键 ER 关系 + 复合索引 + 业务目录树。<br>不影响现有项目（多项目隔离），创建后自动切换过去。</p>';
+        return w;
+      })(), [{
+        label: '创建示例', cls: 'primary', onClick: function () {
+          Dialogs.closeModal();
+          Store.installOtlpSample(false).then(function (r) {
+            if (r.skipped) { Dialogs.toast('示例已存在，从顶栏下拉切换即可'); renderProjectSelect(); return; }
+            catCollapsed = {};
+            App.refresh();
+            switchProject(r.id);
+            Dialogs.toast('已创建「电商业务库（示例）」');
+          }).catch(function (e) { Dialogs.toast('创建示例失败：' + e.message, true); });
+        }
+      }]);
+    };
     document.getElementById('btn-sample').onclick = function () {
       Dialogs.openModal('加载示例项目', (function () {
         var w = document.createElement('div');
@@ -709,6 +823,7 @@
     document.getElementById('project-select').addEventListener('change', function () {
       var v = this.value;
       if (v === '__new__') { renderProjectSelect(); openNewProject(); return; }
+      if (v === '__manage__') { renderProjectSelect(); openManageProjects(); return; }
       var id = parseInt(v, 10);
       if (!id || id === Store.projectId) { renderProjectSelect(); return; }
       switchProject(id);
@@ -778,6 +893,12 @@
       var first = Store.getModels()[0];
       if (first && !Store.selectedId) Store.selectedId = first.id;
       refresh();
+      // 全新库自动补装 OLTP 示例项目（幂等，不切换，仅出现在下拉里）
+      if (Store.serverOnline && Store.projects.length === 1 && root.OLTP_SAMPLE) {
+        Store.installOtlpSample(true).then(function (r) {
+          if (!r.skipped) { renderProjectSelect(); Dialogs.toast('已为你预置「电商业务库（示例）」OLTP 项目，顶栏可切换'); }
+        }).catch(function () { });
+      }
       if (source === 'local') Dialogs.toast('未连接本地服务，数据暂存浏览器（运行 node server.js 可启用 SQLite 持久化）');
     });
 

@@ -355,6 +355,7 @@
   // 单节点拖拽：移动时实时更新盒子与相连连线；松手保存布局（仅本地自动保存，不触发全页重渲染）
   // bounds: 可拖动范围（钳制在画布 viewBox 内，防止拖出可视区域后"消失"）
   function attachNodeDrag(svg, box, n, pos, refreshEdges, opts, bounds) {
+    var free = !bounds; // bounds=null → 无钳制自由拖拽（ER 图用，「适应窗口」随时找回）
     box.addEventListener('mousedown', function (e) {
       if (e.button !== 0) return;
       e.stopPropagation(); // 不触发画布平移
@@ -368,8 +369,8 @@
         var dx = (ev.clientX - sx) / scale, dy = (ev.clientY - sy) / scale;
         if (!moved && Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) > 4) moved = true;
         if (!moved) return;
-        var nx = Math.max(0, Math.min(base.x + dx, bounds.maxX));
-        var ny = Math.max(0, Math.min(base.y + dy, bounds.maxY));
+        var nx = free ? base.x + dx : Math.max(0, Math.min(base.x + dx, bounds.maxX));
+        var ny = free ? base.y + dy : Math.max(0, Math.min(base.y + dy, bounds.maxY));
         pos[n.id] = { x: Math.round(nx), y: Math.round(ny) };
         box.setAttribute('transform', 'translate(' + pos[n.id].x + ',' + pos[n.id].y + ')');
         refreshEdges(n.id);

@@ -12,6 +12,7 @@
   root.ER = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
+  var rootRef = typeof globalThis !== 'undefined' ? globalThis : this; // factory 内安全全局引用
   var svgEl = (typeof Lineage !== 'undefined') ? Lineage.svgEl
     : (typeof require !== 'undefined' ? require('./lineage.js').svgEl : null);
   var attachPanZoom = (typeof Lineage !== 'undefined') ? Lineage.attachPanZoom
@@ -97,6 +98,114 @@
     return pos;
   }
 
+  // ---- 字段拖拽建关系 ----
+  // 从字段行按下拖动：临时虚线跟随鼠标；释放在目标字段行/实体头上 → 弹基数选择
+  function attachFieldDrag(svg, box, t, model, field) {
+    t.addEventListener('mousedown', function (e) {
+      e.stopPropagation(); // 不触发节点移动/画布平移
+      e.preventDefault();
+      var view = (typeof svg._getView === 'function' && svg._getView()) || { x: 0, y: 0, s: 1 };
+      var svgRect = svg.getBoundingClientRect();
+      var toLocal = function (ev) {
+        return {
+          x: (ev.clientX - svgRect.left - view.x) / view.s,
+          y: (ev.clientY - svgRect.top - view.y) / view.s
+        };
+      };
+      var start = toLocal(e);
+      // 临时虚线 + 起点小圆
+      var temp = svgEl('path', { d: '', fill: 'none', style: 'stroke:var(--accent)', 'stroke-width': 1.6, 'stroke-dasharray': '5 4', 'pointer-events': 'none' });
+      var dot = svgEl('circle', { cx: start.x, cy: start.y, r: 3, fill: 'var(--accent)', 'pointer-events': 'none' });
+      (svg.querySelector('.viewport')).appendChild(temp);
+      (svg.querySelector('.viewport')).appendChild(dot);
+      var target = null; // { model, field|null }
+      function hitTarget(ev) {
+        var el = document.elementFromPoint(ev.clientX, ev.clientY);
+        if (!el) return null;
+        var fieldEl = el.closest ? el.closest('.er-field') : null;
+        if (fieldEl) {
+          var tb = fieldEl.closest('.er-box');
+          var mid = tb && tb.__erModel;
+          if (mid && mid !== model) return { model: mid, field: fieldEl.getAttribute('data-field') || null };
+        }
+        var boxEl = el.closest ? el.closest('.er-box') : null;
+        if (boxEl) {
+          var bm = boxEl.__erModel;
+          if (bm && bm !== model) return { model: bm, field: null }; // 实体级：默认连其主键
+        }
+        return null;
+      }
+      function onMove(ev) {
+        var p = toLocal(ev);
+        var mx = Math.max(start.x, p.x), mn = Math.min(start.x, p.x);
+        temp.setAttribute('d', 'M ' + start.x + ' ' + start.y + ' C ' + ((start.x + mx) / 2) + ' ' + start.y + ', ' + ((start.x + mx) / 2) + ' ' + p.y + ', ' + p.x + ' ' + p.y);
+        dot.setAttribute('cx', start.x); dot.setAttribute('cy', start.y);
+        target = hitTarget(ev);
+        temp.style.stroke = target ? 'var(--ok)' : 'var(--accent)';
+      }
+      function onUp(ev) {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        temp.remove(); dot.remove();
+        var hit = hitTarget(ev);
+        if (hit && (Math.abs(ev.clientX - e.clientX) + Math.abs(ev.clientY - e.clientY)) > 6) {
+          openCardinalityPicker(ev.clientX, ev.clientY, model, field, hit.model, hit.field);
+        }
+      }
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+  }
+
+  // 基数选择浮层：N:1 / 1:1 / N:N（N:N 自动生成中间表）
+  function openCardinalityPicker(cx, cy, fromModel, fromField, toModel, toFieldGuess) {
+    var toPk = (toModel.fields || []).filter(function (f) { return f.pk; }).map(function (f) { return f.name; })[0] || null;
+    var toCol = toFieldGuess || toPk || ((toModel.fields || [])[0] || {}).name || 'id';
+    var old = document.getElementById('er-card-picker');
+    if (old) old.remove();
+    var layer = document.createElement('div');
+    layer.id = 'er-card-picker';
+    layer.style.cssText = 'position:fixed;z-index:9999;left:' + Math.min(cx, window.innerWidth - 300) + 'px;top:' + Math.min(cy + 12, window.innerHeight - 170) + 'px;background:var(--panel);border:1px solid var(--line-2);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.18);padding:10px;width:280px;font-size:12px';
+    layer.innerHTML =
+      '<div style="font-weight:600;margin-bottom:2px">' + esc(fromModel.name || '?') + '.<b>' + esc(fromField.name || '?') + '</b> → ' + esc(toModel.name || '?') + '.<b>' + esc(toCol) + '</b></div>' +
+      '<div style="color:var(--text-3);margin-bottom:8px">选择关系基数：</div>' +
+      '<div class="er-card-opts">' +
+      '<button data-card="n1">N : 1（多对一）<span>本字段作外键，可重复</span></button>' +
+      '<button data-card="11">1 : 1（一对一）<span>外键 + 唯一约束</span></button>' +
+      '<button data-card="nn">N : N（多对多）<span>自动生成中间表实体</span></button>' +
+      '<button data-card="cancel" class="er-card-cancel">取消</button>' +
+      '</div>';
+    document.body.appendChild(layer);
+    function close() { layer.remove(); document.removeEventListener('mousedown', onDoc, true); }
+    function onDoc(e) { if (!layer.contains(e.target)) close(); }
+    document.addEventListener('mousedown', onDoc, true);
+    layer.addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-card]');
+      if (!b) return;
+      var card = b.dataset.card;
+      if (card === 'cancel') { close(); return; }
+      var ERApp = rootRef.ER_HOOKS || {};
+      if (card === 'n1') {
+        fromField.fk = toModel.name + '.' + toCol;
+        delete fromField.unique;
+        (ERApp.afterRelationChange || function () { })();
+      } else if (card === '11') {
+        fromField.fk = toModel.name + '.' + toCol;
+        fromField.unique = true;
+        (ERApp.afterRelationChange || function () { })();
+      } else if (card === 'nn') {
+        var tPk = toPk || toCol;
+        var fPk = (fromModel.fields || []).filter(function (f) { return f.pk; }).map(function (f) { return f.name; })[0] || 'id';
+        var base = (fromModel.name + '_' + toModel.name).toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+        var name = base, n = 2, names = {};
+        (ERApp.getModelNames || function () { return []; })().forEach(function (x) { names[x] = 1; });
+        while (names[name]) { name = base + '_' + n; n++; }
+        (ERApp.createJoinEntity || function () {})(name, fromModel.name, fPk, toModel.name, tPk);
+      }
+      close();
+    });
+  }
+
   /**
    * 渲染 ER 图到容器
    * opts: { getLayout, saveLayout, onSelectModel }
@@ -130,12 +239,10 @@
       totalW = Math.max(totalW, p.x + BOX_W + 60);
       totalH = Math.max(totalH, p.y + boxH(m) + 50);
     });
-    var MAXX = Math.max(0, totalW - BOX_W), MAXY = Math.max(0, totalH - maxH);
-    function clampP(v, max) { return Math.max(0, Math.min(Math.round(v), max)); }
     var pos = {};
     models.forEach(function (m) {
       var p = saved[m.id] || { x: 40, y: TOP };
-      pos[m.id] = { x: clampP(p.x, MAXX), y: clampP(p.y, MAXY) };
+      pos[m.id] = { x: Math.round(p.x), y: Math.round(p.y) }; // 自由布局：不做钳制，「适应窗口」可随时找回
     });
 
     // SVG 尺寸 = 可视容器（画布即视口），内容靠 viewport transform 适应
@@ -204,6 +311,11 @@
           rec.label.setAttribute('x', (gm.x1 + gm.x2) / 2);
           rec.label.setAttribute('y', (gm.y1 + gm.y2) / 2 - 7);
         }
+        if (rec.delBtn) {
+          var lx = (gm.x1 + gm.x2) / 2, ly = (gm.y1 + gm.y2) / 2 + 10;
+          rec.delBtn.setAttribute('transform', 'translate(' + lx + ',' + ly + ')');
+        }
+        if (rec.hit) rec.hit.setAttribute('d', 'M ' + gm.x1 + ' ' + gm.y1 + ' L ' + gm.x2 + ' ' + gm.y2);
       }
       if (geo.stub) {
         rec.path = svgEl_('path', {
@@ -234,6 +346,23 @@
         });
         rec.label.textContent = (e.field.name || '?') + ' → ' + (e.targetColumn || '?');
         g.appendChild(rec.label);
+        // 删除按钮：悬停连线区域显示 ✕（点按删除该外键）
+        rec.delBtn = svgEl('g', { class: 'er-edge-del-g', style: 'display:none;cursor:pointer' });
+        var delC = svgEl('circle', { r: 8, class: 'er-edge-del' });
+        var delX = svgEl('text', { 'font-size': 10, 'text-anchor': 'middle', style: 'fill:var(--danger)' });
+        delX.setAttribute('dy', '3.2'); delX.textContent = '✕';
+        rec.delBtn.appendChild(delC); rec.delBtn.appendChild(delX);
+        rec.delBtn.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+        rec.delBtn.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          var ERApp = rootRef.ER_HOOKS || {};
+          (ERApp.removeRelation || function () {})(e.fromModel, e.field);
+        });
+        rec.hit = svgEl('path', { d: '', fill: 'none', style: 'stroke:transparent', 'stroke-width': 14, 'pointer-events': 'stroke' });
+        rec.hit.addEventListener('mouseenter', function () { rec.delBtn.style.display = ''; });
+        rec.hit.addEventListener('mouseleave', function () { rec.delBtn.style.display = 'none'; });
+        edgesG.appendChild(rec.hit);
+        g.appendChild(rec.delBtn);
       }
       rec.redraw = redraw;
       redraw();
@@ -259,6 +388,7 @@
       var p = pos[m.id];
       var color = 'var(--accent)';
       var box = svgEl_('g', { class: 'er-box ln-mbox', 'data-id': m.id, transform: 'translate(' + p.x + ',' + p.y + ')', cursor: 'pointer' });
+      box.__erModel = m;
       box.appendChild(svgEl_('rect', { width: BOX_W, height: boxH(m), rx: 8, style: 'fill:var(--panel);stroke:var(--line-2)', 'stroke-width': 1.2, class: 'er-box-body' }));
       box.appendChild(svgEl_('rect', { width: BOX_W, height: HEADER_H, rx: 8, style: 'fill:var(--panel-3)', class: 'er-box-head' }));
       box.appendChild(svgEl_('rect', { width: BOX_W, height: 12, y: HEADER_H - 12, style: 'fill:var(--panel-3)' }));
@@ -281,12 +411,14 @@
         var marks = '';
         if (f.pk) marks += '🔑';
         if (f.fk) marks += '🔗';
-        var t = svgEl_('text', { x: 11, y: ry, 'font-size': 11, class: 'ln-field', style: 'fill:var(--text-2)' });
+        var t = svgEl_('text', { x: 11, y: ry, 'font-size': 11, class: 'ln-field er-field', style: 'fill:var(--text-2)', 'data-field': f.name || '', cursor: 'crosshair' });
         t.textContent = (marks ? marks + ' ' : '') + (f.name || '（空）');
         box.appendChild(t);
-        var ty = svgEl_('text', { x: BOX_W - 11, y: ry, 'font-size': 9.5, 'text-anchor': 'end', class: 'er-ftype', style: 'fill:var(--text-faint)' });
+        var ty = svgEl_('text', { x: BOX_W - 11, y: ry, 'font-size': 9.5, 'text-anchor': 'end', class: 'er-ftype', style: 'fill:var(--text-faint)', 'pointer-events': 'none' });
         ty.textContent = f.type || '';
         box.appendChild(ty);
+        // 字段行拖拽 → 建立关系（1:1 / 1:N / N:N）
+        attachFieldDrag(svg, box, t, m, f);
       });
       boxes[m.id] = box;
 
@@ -308,7 +440,7 @@
           models.forEach(function (x) { out[x.id] = { x: pos[x.id].x, y: pos[x.id].y }; });
           opts.saveLayout && opts.saveLayout(out);
         }
-      }, { maxX: MAXX, maxY: MAXY });
+      }, null); // ER 图自由拖拽（无边界）
 
       if (opts.onSelectModel) box.addEventListener('click', function () {
         if (box._skipClick) { box._skipClick = false; return; }

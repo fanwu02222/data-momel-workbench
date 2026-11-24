@@ -950,3 +950,28 @@ body.oltp .layer-legend { display: none; }
   .hero-acts { flex-wrap: wrap; }
   .topbar-actions .btn span { display: none; }
 }
+
+/* ============ 项目管理弹窗 ============ */
+.mg-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.mg-table th { text-align: left; font-size: 11px; color: var(--text-faint); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--hairline); }
+.mg-table td { padding: 6px 8px; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
+.mg-table .mg-name { width: 100%; }
+.mg-table .mg-ops { white-space: nowrap; display: flex; gap: 6px; }
+.mg-cur { font-size: 10.5px; color: var(--accent); background: var(--accent-wash); border-radius: 999px; padding: 1px 8px; }
+
+/* ER 字段拖拽与基数选择 */
+.er-field:hover { fill: var(--accent); }
+.er-card-opts { display: flex; flex-direction: column; gap: 5px; }
+.er-card-opts button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left;
+  background: var(--panel-2); border: 1px solid var(--hairline); border-radius: 7px;
+  padding: 6px 10px; cursor: pointer; font-size: 12px; color: var(--text);
+}
+.er-card-opts button:hover { border-color: var(--accent); background: var(--accent-wash); }
+.er-card-opts button span { font-size: 10.5px; color: var(--text-faint); }
+.er-card-opts .er-card-cancel { align-items: center; border: none; background: none; color: var(--text-faint); padding: 2px; }
+.er-edge-del {
+  cursor: pointer; fill: var(--panel); stroke: var(--danger); stroke-width: 1.2;
+  rx: 8; paint-order: stroke;
+}
+.er-edge-del:hover { fill: var(--danger-wash); }

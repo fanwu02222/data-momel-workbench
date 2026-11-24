@@ -1,0 +1,355 @@
+{
+  "customCols": {
+    "field": [],
+    "model": []
+  },
+  "dialect": "mysql",
+  "kind": "oltp",
+  "models": [
+    {
+      "catalogId": "c_mwufuvorz6g4z",
+      "cnName": "部门",
+      "createdAt": "2026-11-24T08:34:25.180Z",
+      "desc": "组织架构部门",
+      "fields": [
+        {
+          "comment": "部门ID",
+          "expr": "",
+          "name": "id",
+          "nullable": false,
+          "pk": true,
+          "type": "bigint"
+        },
+        {
+          "comment": "部门名称",
+          "expr": "",
+          "name": "dept_name",
+          "nullable": false,
+          "pk": false,
+          "type": "varchar(64)"
+        },
+        {
+          "comment": "上级部门（自关联）",
+          "expr": "",
+          "fk": "dept_info.id",
+          "name": "parent_id",
+          "pk": false,
+          "type": "bigint"
+        },
+        {
+          "comment": "状态 1正常 0停用",
+          "default": "1",
+          "expr": "",
+          "name": "status",
+          "nullable": false,
+          "pk": false,
+          "type": "tinyint"
+        }
+      ],
+      "groupBy": "",
+      "id": "e_dept",
+      "indexes": [
+        {
+          "fields": [
+            "parent_id"
+          ],
+          "name": "idx_dept_parent",
+          "unique": false
+        }
+      ],
+      "layer": "entity",
+      "name": "dept_info",
+      "notes": "",
+      "partition": [],
+      "source": "",
+      "sources": [],
+      "where": ""
+    },
+    {
+      "catalogId": "c_mwufuvorz6g4z",
+      "cnName": "用户",
+      "createdAt": "2026-11-24T08:34:25.180Z",
+      "desc": "C 端注册用户",
+      "fields": [
+        {
+          "comment": "用户ID",
+          "expr": "",
+          "name": "id",
+          "nullable": false,
+          "pk": true,
+          "type": "bigint"
+        },
+        {
+          "comment": "所属部门（内部员工运营账号）",
+          "expr": "",
+          "fk": "dept_info.id",
+          "name": "dept_id",
+          "pk": false,
+          "type": "bigint"
+        },
+        {
+          "__liveMark": "LIVE",
+          "__probe": 1,
+          "comment": "登录名",
+          "expr": "",
+          "name": "username",
+          "nullable": false,
+          "pk": false,
+          "type": "varchar(32)"
+        },
+        {
+          "comment": "邮箱（唯一）",
+          "expr": "",
+          "name": "email",
+          "nullable": false,
+          "pk": false,
+          "type": "varchar(128)"
+        },
+        {
+          "comment": "状态",
+          "default": "1",
+          "expr": "",
+          "name": "status",
+          "nullable": false,
+          "pk": false,
+          "type": "tinyint"
+        },
+        {
+          "comment": "注册时间",
+          "default": "CURRENT_TIMESTAMP",
+          "expr": "",
+          "name": "created_at",
+          "nullable": false,
+          "pk": false,
+          "type": "datetime"
+        }
+      ],
+      "groupBy": "",
+      "id": "e_user",
+      "indexes": [
+        {
+          "fields": [
+            "dept_id",
+            "status"
+          ],
+          "name": "idx_user_dept_status",
+          "unique": false
+        }
+      ],
+      "layer": "entity",
+      "name": "user_info",
+      "notes": "",
+      "partition": [],
+      "source": "",
+      "sources": [],
+      "where": ""
+    },
+    {
+      "catalogId": "c_mwufuvokz733p",
+      "cnName": "商品",
+      "createdAt": "2026-11-24T08:34:25.180Z",
+      "desc": "在售商品 SKU",
+      "fields": [
+        {
+          "comment": "商品ID",
+          "expr": "",
+          "name": "id",
+          "nullable": false,
+          "pk": true,
+          "type": "bigint"
+        },
+        {
+          "comment": "商品名称",
+          "expr": "",
+          "name": "sku_name",
+          "nullable": false,
+          "pk": false,
+          "type": "varchar(128)"
+        },
+        {
+          "comment": "售价",
+          "expr": "",
+          "name": "price",
+          "nullable": false,
+          "pk": false,
+          "type": "decimal(18,2)"
+        },
+        {
+          "comment": "库存",
+          "default": "0",
+          "expr": "",
+          "name": "stock",
+          "nullable": false,
+          "pk": false,
+          "type": "int"
+        }
+      ],
+      "groupBy": "",
+      "id": "e_sku",
+      "indexes": [
+        {
+          "fields": [
+            "sku_name"
+          ],
+          "name": "uk_sku_name",
+          "unique": true
+        }
+      ],
+      "layer": "entity",
+      "name": "sku_info",
+      "notes": "",
+      "partition": [],
+      "source": "",
+      "sources": [],
+      "where": ""
+    },
+    {
+      "catalogId": "c_mwufuvochm6xi",
+      "cnName": "订单",
+      "createdAt": "2026-11-24T08:34:25.180Z",
+      "desc": "订单主表",
+      "fields": [
+        {
+          "comment": "订单ID",
+          "expr": "",
+          "name": "id",
+          "nullable": false,
+          "pk": true,
+          "type": "bigint"
+        },
+        {
+          "comment": "下单用户",
+          "expr": "",
+          "fk": "user_info.id",
+          "name": "user_id",
+          "nullable": false,
+          "pk": false,
+          "type": "bigint"
+        },
+        {
+          "comment": "订单状态",
+          "default": "0",
+          "expr": "",
+          "name": "order_status",
+          "nullable": false,
+          "pk": false,
+          "type": "tinyint"
+        },
+        {
+          "comment": "订单总额",
+          "expr": "",
+          "name": "total_amount",
+          "nullable": false,
+          "pk": false,
+          "type": "decimal(18,2)"
+        },
+        {
+          "comment": "下单时间",
+          "default": "CURRENT_TIMESTAMP",
+          "expr": "",
+          "name": "created_at",
+          "nullable": false,
+          "pk": false,
+          "type": "datetime"
+        }
+      ],
+      "groupBy": "",
+      "id": "e_order",
+      "indexes": [
+        {
+          "fields": [
+            "user_id",
+            "order_status"
+          ],
+          "name": "idx_order_user_status",
+          "unique": false
+        }
+      ],
+      "layer": "entity",
+      "name": "order_info",
+      "notes": "",
+      "partition": [],
+      "source": "",
+      "sources": [],
+      "where": ""
+    },
+    {
+      "catalogId": "c_mwufuvochm6xi",
+      "cnName": "订单明细",
+      "createdAt": "2026-11-24T08:34:25.180Z",
+      "desc": "订单-商品关联（N:N 中间表）",
+      "fields": [
+        {
+          "comment": "明细ID",
+          "expr": "",
+          "name": "id",
+          "nullable": false,
+          "pk": true,
+          "type": "bigint"
+        },
+        {
+          "comment": "所属订单",
+          "expr": "",
+          "fk": "order_info.id",
+          "name": "order_id",
+          "nullable": false,
+          "pk": false,
+          "type": "bigint"
+        },
+        {
+          "comment": "商品",
+          "expr": "",
+          "fk": "sku_info.id",
+          "name": "sku_id",
+          "nullable": false,
+          "pk": false,
+          "type": "bigint"
+        },
+        {
+          "comment": "数量",
+          "default": "1",
+          "expr": "",
+          "name": "quantity",
+          "nullable": false,
+          "pk": false,
+          "type": "int"
+        },
+        {
+          "comment": "成交单价",
+          "expr": "",
+          "name": "deal_price",
+          "nullable": false,
+          "pk": false,
+          "type": "decimal(18,2)"
+        }
+      ],
+      "groupBy": "",
+      "id": "e_order_item",
+      "indexes": [
+        {
+          "fields": [
+            "order_id"
+          ],
+          "name": "idx_item_order",
+          "unique": false
+        },
+        {
+          "fields": [
+            "sku_id"
+          ],
+          "name": "idx_item_sku",
+          "unique": false
+        }
+      ],
+      "layer": "entity",
+      "name": "order_item",
+      "notes": "",
+      "partition": [],
+      "source": "",
+      "sources": [],
+      "where": ""
+    }
+  ],
+  "name": "电商业务库（示例）",
+  "updatedAt": "2026-11-24T13:26:23.691Z"
+}
