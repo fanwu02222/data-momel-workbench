@@ -19,6 +19,7 @@
   var VIEW_KEY = 'dw-workbench-sidebar-view';
   var sidebarView = 'layer';
   try { var savedView = localStorage.getItem(VIEW_KEY); if (savedView === 'catalog') sidebarView = 'catalog'; } catch (e) { }
+  var olapViewPref = sidebarView; // olap 用户的视图偏好（oltp 强制目录树时不覆盖）
   var catCollapsed = {}; // 目录节点折叠状态（仅存内存）
   var layerCollapsed = {}; // 分层视图各层折叠状态（仅存内存）
 
@@ -159,10 +160,13 @@
     if (addBtn) addBtn.onclick = function () { openCatalogNodeDialog('root', null); };
   }
 
-  // 侧栏视图切换（按分层 / 按业务目录）
+  // 侧栏视图切换（按分层 / 按业务目录）；oltp 项目强制目录树视图（不写入记忆，避免覆盖 olap 偏好）
   function setSidebarView(v) {
     sidebarView = v;
-    try { localStorage.setItem(VIEW_KEY, v); } catch (e) { }
+    if (!document.body.classList.contains('oltp')) {
+      olapViewPref = v;
+      try { localStorage.setItem(VIEW_KEY, v); } catch (e) { }
+    }
     document.querySelectorAll('.sidebar-toggle .seg-btn').forEach(function (b) { b.classList.toggle('active', b.dataset.view === v); });
     document.getElementById('layer-groups').style.display = v === 'layer' ? '' : 'none';
     var title = document.getElementById('sidebar-title');
@@ -170,24 +174,50 @@
     renderCatalogView();
   }
 
+  // 项目类型（oltp/olap）驱动的全局 UI 切换：侧栏视图、文案、页签、顶栏按钮
+  function applyKindUI() {
+    var oltp = Store.isOLTP();
+    document.body.classList.toggle('oltp', oltp);
+    // 顶栏「推送到数仓」仅 oltp 显示（CSS 控制 display）
+    var pushBtn = document.getElementById('btn-push-ods');
+    if (pushBtn) pushBtn.style.display = oltp ? '' : 'none';
+    // 页签与图标轨道文案：血缘关系 ⇄ ER 模型图
+    var tabLabel = oltp ? 'ER 模型图' : '血缘关系';
+    var tabBtn = document.querySelector('#tabs button[data-tab="lineage"] .tab-label');
+    if (tabBtn) tabBtn.textContent = tabLabel;
+    var rail = document.querySelector('.rail-item[data-rail="lineage"]');
+    if (rail) rail.title = tabLabel;
+    // 新建按钮文案
+    var newLabel = document.getElementById('new-model-label');
+    if (newLabel) newLabel.textContent = oltp ? '新建实体' : '新建模型';
+    // oltp 强制目录树视图；olap 恢复用户视图偏好
+    setSidebarView(oltp ? 'catalog' : olapViewPref);
+  }
+
   // ---------- 目录节点弹窗：新建（根/子）/ 改名 ----------
   function openCatalogNodeDialog(mode, node) {
     var isRoot = mode === 'root', isRename = mode === 'rename';
+    var oltp = Store.isOLTP();
     // 子节点级别规则：L1 下→L2；L2 下→L2 子域或 L3；L3 下→L3（同级）
+    // oltp 语义：L1 业务域 / L2 模块（可多级）/ L3 子域；olap 语义：L1 业务域 / L2 主题域 / L3 业务对象
     var levelOpts;
     if (isRoot) levelOpts = [{ v: 1, label: 'L1 · 业务域' }];
-    else if (node.level === 1) levelOpts = [{ v: 2, label: 'L2 · 主题域' }];
-    else if (node.level === 2) levelOpts = [{ v: 2, label: 'L2 · 主题域（子域）' }, { v: 3, label: 'L3 · 业务对象' }];
-    else levelOpts = [{ v: 3, label: 'L3 · 业务对象（同级）' }];
+    else if (node.level === 1) levelOpts = [{ v: 2, label: oltp ? 'L2 · 模块' : 'L2 · 主题域' }];
+    else if (node.level === 2) levelOpts = oltp
+      ? [{ v: 2, label: 'L2 · 模块（子模块）' }, { v: 3, label: 'L3 · 子域' }]
+      : [{ v: 2, label: 'L2 · 主题域（子域）' }, { v: 3, label: 'L3 · 业务对象' }];
+    else levelOpts = [{ v: 3, label: oltp ? 'L3 · 子域（同级）' : 'L3 · 业务对象（同级）' }];
     var title = isRename ? '改名目录节点' : (isRoot ? '新建业务域（L1 根节点）' : '新建子节点');
     var wrap = document.createElement('div');
     wrap.innerHTML =
       '<div class="form-grid cat-dialog">' +
-      '<label>名称<input id="cn-name" placeholder="如：财务域 / 应收 / 发票"></label>' +
-      '<label>中文名<input id="cn-cn" placeholder="如：应收管理"></label>' +
+      '<label>名称<input id="cn-name" placeholder="' + (oltp ? '如：交易域 / 订单 / 支付' : '如：财务域 / 应收 / 发票') + '"></label>' +
+      '<label>中文名<input id="cn-cn" placeholder="' + (oltp ? '如：订单管理' : '如：应收管理') + '"></label>' +
       (isRename ? '' : '<label>级别<select id="cn-level">' + levelOpts.map(function (o) { return '<option value="' + o.v + '">' + o.label + '</option>'; }).join('') + '</select></label>') +
       '</div>' +
-      (!isRoot ? '<p class="hint small cat-parent-hint">父节点：' + esc(node.name) + (node.cnName ? '（' + esc(node.cnName) + '）' : '') + ' · 层级语义 L1 业务域 → L2 主题域 → L3 业务对象，L4=挂载模型，L5=字段</p>' : '');
+      (!isRoot ? '<p class="hint small cat-parent-hint">父节点：' + esc(node.name) + (node.cnName ? '（' + esc(node.cnName) + '）' : '') + ' · 层级语义 ' + (oltp
+        ? 'L1 业务域 → L2 模块 → L3 子域，L4=挂载实体，L5=字段'
+        : 'L1 业务域 → L2 主题域 → L3 业务对象，L4=挂载模型，L5=字段') + '</p>' : '');
     if (isRename) {
       wrap.querySelector('#cn-name').value = node.name || '';
       wrap.querySelector('#cn-cn').value = node.cnName || '';
@@ -277,25 +307,41 @@
   function openNewProject() {
     var wrap = document.createElement('div');
     var dialects = ['hive', 'mysql', 'clickhouse', 'postgresql'];
+    var DIALECT_BY_KIND = { oltp: 'mysql', olap: 'hive' };
     wrap.innerHTML =
-      '<div class="form-grid cat-dialog">' +
+      '<div class="kind-picker">' +
+      '<label class="kind-opt"><input type="radio" name="np-kind" value="oltp"><span class="kind-ico">🗃</span><span class="kind-txt"><b>业务库建模（OLTP）</b><small>实体 / ER 图 / 外键索引，产出业务库 DDL</small></span></label>' +
+      '<label class="kind-opt"><input type="radio" name="np-kind" value="olap" checked><span class="kind-ico">📊</span><span class="kind-txt"><b>数仓建模（OLAP）</b><small>分层 / 血缘 / ETL，产出数仓脚本</small></span></label>' +
+      '</div>' +
+      '<div class="form-grid cat-dialog" style="margin-top:12px">' +
       '<label>项目名称<input id="np-name" placeholder="如：零售交易数仓"></label>' +
       '<label>默认方言<select id="np-dialect">' + dialects.map(function (d) {
         return '<option value="' + d + '"' + (Store.project && Store.project.dialect === d ? ' selected' : '') + '>' + SQLGen.dialectName(d) + '</option>';
       }).join('') + '</select></label>' +
       '</div>' +
       '<p class="hint small cat-parent-hint">新项目为空项目（无模型），创建后自动切换过去；各项目的模型与业务目录相互独立。</p>';
+    // 类型 → 默认方言联动（用户手动改方言后不再覆盖）
+    var kindTouched = false, dialectTouched = false;
+    wrap.querySelectorAll('input[name="np-kind"]').forEach(function (r) {
+      r.addEventListener('change', function () {
+        if (!dialectTouched) wrap.querySelector('#np-dialect').value = DIALECT_BY_KIND[r.value] || 'hive';
+        kindTouched = true;
+      });
+    });
+    wrap.querySelector('#np-dialect').addEventListener('change', function () { dialectTouched = true; });
     Dialogs.openModal('新建项目', wrap, [{
       label: '创建', cls: 'primary', onClick: function () {
         var name = wrap.querySelector('#np-name').value.trim();
         var dialect = wrap.querySelector('#np-dialect').value;
+        var kindEl = wrap.querySelector('input[name="np-kind"]:checked');
+        var kind = kindEl ? kindEl.value : 'olap';
         if (!name) { Dialogs.toast('请填写项目名称', true); return; }
-        Store.createProject(name, dialect).then(function (d) {
+        Store.createProject(name, dialect, kind).then(function (d) {
           Dialogs.closeModal();
           return Store.loadProject(d.project.id, function () {
             catCollapsed = {};
             App.refresh();
-            Dialogs.toast('已创建并切换到「' + d.project.name + '」');
+            Dialogs.toast('已创建并切换到「' + d.project.name + '」' + (kind === 'oltp' ? '（业务库建模）' : ''));
           });
         }).catch(function (e) { Dialogs.toast('创建项目失败：' + e.message, true); });
       }
@@ -325,7 +371,10 @@
     var h = [];
     h.push('<div class="sql-toolbar">');
     h.push('<label>范围 <select id="sql-scope"><option value="all">全部模型（按依赖排序）</option><option value="one"' + (m ? '' : ' disabled') + '>当前模型' + (m ? '：' + esc(m.name) : '（未选择）') + '</option></select></label>');
-    h.push('<label>内容 <select id="sql-parts"><option value="both">DDL + DML</option><option value="ddl">仅建表 DDL</option><option value="dml">仅 ETL DML</option></select></label>');
+    var partsOpts = Store.isOLTP()
+      ? '<option value="ddl" selected>仅建表 DDL</option>'
+      : '<option value="both">DDL + DML</option><option value="ddl">仅建表 DDL</option><option value="dml">仅 ETL DML</option>';
+    h.push('<label>内容 <select id="sql-parts">' + partsOpts + '</select></label>');
     h.push('<label>方言 <select id="sql-dialect">');
     ['hive', 'mysql', 'clickhouse', 'postgresql'].forEach(function (d) {
       h.push('<option value="' + d + '"' + (Store.project.dialect === d ? ' selected' : '') + '>' + SQLGen.dialectName(d) + '</option>');
@@ -371,12 +420,56 @@
     pre.innerHTML = highlightSQL(sql);
   }
 
-  // ---------- 血缘页 ----------
+  // ---------- 血缘页 / ER 模型图页 ----------
   function renderLineagePane() {
     var pane = document.getElementById('pane-lineage');
     var m = Store.find(Store.selectedId);
     var h = [];
     h.push('<div class="lin-toolbar">');
+    if (Store.isOLTP()) {
+      /* ---- ER 模型图（oltp 项目） ---- */
+      h.push('<div class="seg"><button class="seg-btn active">ER 模型图（全项目实体）</button></div>');
+      h.push('<div class="lin-tools"><span class="hint">拖动实体调整布局 · 空白处拖动平移 · 滚轮缩放 · 点击实体编辑</span>'
+        + '<button class="btn small" id="btn-lin-clear">重置布局</button>'
+        + '<button class="btn small" id="btn-lin-reset">适应窗口</button></div>');
+      h.push('</div>');
+      h.push('<div class="lin-canvas-wrap"><div id="lin-canvas" class="lin-canvas"></div></div>');
+      h.push('<div id="lin-warnings" class="lin-warnings"></div>');
+      pane.innerHTML = h.join('');
+      var canvas = document.getElementById('lin-canvas');
+      var warnBox = document.getElementById('lin-warnings');
+      document.getElementById('btn-lin-reset').onclick = function () {
+        var svg = canvas.querySelector('svg');
+        if (svg && svg._resetView) svg._resetView();
+      };
+      document.getElementById('btn-lin-clear').onclick = function () {
+        delete Store.project.layout;
+        Store.autosave();
+        renderLineagePane();
+        Dialogs.toast('已恢复默认布局');
+      };
+      if (!Store.getModels().length) {
+        canvas.innerHTML = '<div class="empty-state small"><p>暂无实体，先在左侧「新建实体」</p></div>';
+        warnBox.innerHTML = '';
+        return;
+      }
+      var r = root.ER.renderER(canvas, Store.project, {
+        catalog: Store.catalog,
+        getLayout: function () { return Store.project.layout || null; },
+        saveLayout: function (lay) { Store.project.layout = lay; Store.autosave(); },
+        onSelectModel: function (id) {
+          Store.selectedId = id;
+          renderSidebar();
+          renderCatalogView();
+          switchTab('model');
+        }
+      });
+      warnBox.innerHTML = (r.warnings || []).length
+        ? '<div class="warn-box">⚠ ' + r.warnings.map(esc).join('<br>⚠ ') + '</div>'
+        : '<div class="ok-box">✅ 共 ' + r.entityCount + ' 个实体、' + r.edgeCount + ' 条外键关系，引用解析完整</div>';
+      return;
+    }
+    /* ---- 血缘关系（olap 项目，原样） ---- */
     h.push('<div class="seg">');
     h.push('<button class="seg-btn' + (lineageMode === 'field' ? ' active' : '') + '" data-mode="field">字段级血缘（当前模型）</button>');
     h.push('<button class="seg-btn' + (lineageMode === 'global' ? ' active' : '') + '" data-mode="global">全局模型血缘</button>');
@@ -449,6 +542,7 @@
     document.getElementById('project-name').value = Store.project.name || '';
     document.getElementById('dialect').value = Store.project.dialect || 'hive';
     renderProjectSelect();
+    applyKindUI();
     renderSidebar();
     renderCatalogView();
     renderStatus();
@@ -508,18 +602,22 @@
 
     // 顶栏
     document.getElementById('btn-new-model').onclick = function () {
-      Dialogs.openModal('新建模型', (function () {
+      var oltp = Store.isOLTP();
+      Dialogs.openModal(oltp ? '新建实体' : '新建模型', (function () {
         var wrap = document.createElement('div');
         wrap.innerHTML =
           '<div class="form-grid">' +
-          '<label>初始分层<select id="nm-layer">' + LAYERS.map(function (l) { return '<option value="' + l.key + '">' + l.title + '</option>'; }).join('') + '</select></label>' +
-          '<label>表名（可留空稍后填写）<input id="nm-name" class="mono" placeholder="如 dwd_order_info_di"></label>' +
+          (oltp
+            ? '<label>表名（可留空稍后填写）<input id="nm-name" class="mono" placeholder="如 user_info"></label>'
+            : '<label>初始分层<select id="nm-layer">' + LAYERS.map(function (l) { return '<option value="' + l.key + '">' + l.title + '</option>'; }).join('') + '</select></label>' +
+          '<label>表名（可留空稍后填写）<input id="nm-name" class="mono" placeholder="如 dwd_order_info_di"></label>') +
           '</div>';
         return wrap;
       })(), [
         {
           label: '创建', cls: 'primary', onClick: function () {
-            var layer = document.getElementById('nm-layer').value;
+            var layerEl = document.getElementById('nm-layer');
+            var layer = layerEl ? layerEl.value : 'entity';
             var name = document.getElementById('nm-name').value.trim();
             var m = Store.newModel(layer);
             if (name) m.name = name;
@@ -551,6 +649,9 @@
     document.getElementById('btn-gensql').onclick = function () { switchTab('sql'); };
     document.getElementById('btn-check').onclick = Dialogs.openCheck;
     document.getElementById('btn-dsh').onclick = Dialogs.openDSH;
+    // 推送到数仓（仅 oltp 项目显示，applyKindUI 控制 display）
+    var pushBtn = document.getElementById('btn-push-ods');
+    if (pushBtn) pushBtn.onclick = function () { Dialogs.openPushToOds(); };
     document.getElementById('btn-save').onclick = function () {
       Store.saveToServer().then(function () {
         renderStatus();

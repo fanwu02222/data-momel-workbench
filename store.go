@@ -555,7 +555,7 @@ func dbPutLocked(projectID int64, data map[string]any) (err error) {
 		}
 		id := jsOr(m["id"], "m_"+strconv.FormatInt(time.Now().UnixMilli(), 36)+"_"+strconv.Itoa(i))
 		if _, err = tx.Exec(`INSERT INTO models (id, project_id, catalog_id, layer, name, cn_name, descr, source, notes, where_txt, group_by, sort_order, created_at, extra_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, projectID, jsOr(m["catalogId"], ""), jsOr(m["layer"], "ods"), jsOr(m["name"], ""), jsOr(m["cnName"], ""), jsOr(m["desc"], ""), jsOr(m["source"], ""), jsOr(m["notes"], ""), jsOr(m["where"], ""), jsOr(m["groupBy"], ""), i, jsOr(m["createdAt"], now), splitExtra(m, modelKnown, false)); err != nil {
+			id, projectID, jsOr(m["catalogId"], ""), jsOr(m["layer"], "ods"), jsOr(m["name"], ""), jsOr(m["cnName"], ""), jsOr(m["desc"], ""), jsOr(m["source"], ""), jsOr(m["notes"], ""), jsOr(m["where"], ""), jsOr(m["groupBy"], ""), i, jsOr(m["createdAt"], now), splitExtra(m, modelKnown, true)); err != nil {
 			return err
 		}
 		if farr, ok := m["fields"].([]any); ok {
@@ -649,22 +649,27 @@ type projectInfo struct {
 	id         int64
 	name       string
 	dialect    string
+	kind       string // oltp | olap（缺省 olap，存 extra_json，列表聚合时读出）
 	updatedAt  sql.NullString
 	modelCount int
 }
 
 func (p projectInfo) toMap() map[string]any {
+	kind := p.kind
+	if kind == "" {
+		kind = "olap"
+	}
 	var updated any
 	if p.updatedAt.Valid {
 		updated = p.updatedAt.String
 	}
-	return map[string]any{"id": p.id, "name": p.name, "dialect": p.dialect, "updatedAt": updated, "modelCount": p.modelCount}
+	return map[string]any{"id": p.id, "name": p.name, "dialect": p.dialect, "kind": kind, "updatedAt": updated, "modelCount": p.modelCount}
 }
 
 func dbListProjects() []map[string]any {
 	dbMu.Lock()
 	defer dbMu.Unlock()
-	rows, err := db.Query(`SELECT p.id, p.name, p.dialect, p.updated_at,
+	rows, err := db.Query(`SELECT p.id, p.name, p.dialect, p.updated_at, p.extra_json,
 		(SELECT COUNT(*) FROM models m WHERE m.project_id = p.id) AS model_count
 		FROM projects p ORDER BY p.id`)
 	if err != nil {
@@ -674,18 +679,29 @@ func dbListProjects() []map[string]any {
 	out := []map[string]any{}
 	for rows.Next() {
 		var p projectInfo
-		if err := rows.Scan(&p.id, &p.name, &p.dialect, &p.updatedAt, &p.modelCount); err != nil {
+		var extraJSON string
+		if err := rows.Scan(&p.id, &p.name, &p.dialect, &p.updatedAt, &extraJSON, &p.modelCount); err != nil {
 			continue
+		}
+		if k, ok := parseExtra(extraJSON)["kind"].(string); ok && k != "" {
+			p.kind = k
 		}
 		out = append(out, p.toMap())
 	}
 	return out
 }
 
-func dbCreateProject(name, dialect string) (projectInfo, error) {
+func dbCreateProject(name, dialect, kind string) (projectInfo, error) {
 	dbMu.Lock()
 	defer dbMu.Unlock()
-	res, err := db.Exec("INSERT INTO projects (name, dialect, updated_at, extra_json) VALUES (?, ?, ?, '{}')", name, dialect, isoNow())
+	if kind != "oltp" {
+		kind = "olap"
+	}
+	extra := "{}"
+	if kind == "oltp" {
+		extra = `{"kind":"oltp"}`
+	}
+	res, err := db.Exec("INSERT INTO projects (name, dialect, updated_at, extra_json) VALUES (?, ?, ?, ?)", name, dialect, isoNow(), extra)
 	if err != nil {
 		return projectInfo{}, err
 	}
@@ -695,7 +711,7 @@ func dbCreateProject(name, dialect string) (projectInfo, error) {
 	}
 	var modelCount int
 	db.QueryRow("SELECT COUNT(*) FROM models WHERE project_id = ?", id).Scan(&modelCount)
-	p := projectInfo{id: id, name: name, dialect: dialect, updatedAt: sql.NullString{String: isoNow(), Valid: true}, modelCount: modelCount}
+	p := projectInfo{id: id, name: name, dialect: dialect, kind: kind, updatedAt: sql.NullString{String: isoNow(), Valid: true}, modelCount: modelCount}
 	_ = exportSnapshotLocked(id)
 	return p, nil
 }
@@ -1014,4 +1030,100 @@ func dbDeleteCatalogNode(projectID int64, id string) (int, error) {
 		return 0, err
 	}
 	return len(subtree), nil
+}
+
+// dbPushToOds: 把 oltp 项目的实体转换为 ODS 贴源模型写入目标 olap 项目
+// 转换规则：layer=ods；字段仅保留 name/type/comment/pk；source=oltp://<源项目名>/<实体名>；
+// 清空 expr/fk/unique/nullable/default/indexes/where/groupBy（贴源不做加工）。
+// 同名冲突：覆盖内容，保留目标侧 id/catalogId/createdAt 与位置。
+func dbPushToOds(srcProjectID int64, modelIDs []string, targetProjectID int64, targetCatalogID string) (map[string]any, error) {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	src, ok := dbGetLocked(srcProjectID)
+	if !ok {
+		return nil, fmt.Errorf("源项目不存在")
+	}
+	if k, _ := src["kind"].(string); k != "oltp" {
+		return nil, fmt.Errorf("源项目不是 OLTP（业务库）项目")
+	}
+	target, ok := dbGetLocked(targetProjectID)
+	if !ok {
+		return nil, fmt.Errorf("目标项目不存在")
+	}
+	if k, _ := target["kind"].(string); k == "oltp" {
+		return nil, fmt.Errorf("目标项目必须是 OLAP（数仓）项目")
+	}
+	idSet := map[string]bool{}
+	for _, id := range modelIDs {
+		idSet[id] = true
+	}
+	srcName, _ := src["name"].(string)
+	converted := []any{}
+	srcModels, _ := src["models"].([]any)
+	for _, mv := range srcModels {
+		m, ok := mv.(map[string]any)
+		if !ok || !idSet[jsStr(m["id"])] {
+			continue
+		}
+		fields := []any{}
+		if farr, ok := m["fields"].([]any); ok {
+			for _, fv := range farr {
+				f, ok := fv.(map[string]any)
+				if !ok {
+					continue
+				}
+				fields = append(fields, map[string]any{
+					"name": jsOr(f["name"], ""), "type": jsOr(f["type"], "string"),
+					"comment": jsOr(f["comment"], ""), "pk": jsTruthy(f["pk"]),
+				})
+			}
+		}
+		converted = append(converted, map[string]any{
+			"layer": "ods", "name": jsOr(m["name"], ""), "cnName": jsOr(m["cnName"], ""),
+			"desc": jsOr(m["desc"], ""), "notes": jsOr(m["notes"], ""),
+			"source": "oltp://" + srcName + "/" + jsOr(m["name"], ""),
+			"fields": fields, "partition": []any{}, "sources": []any{},
+		})
+	}
+	if len(converted) == 0 {
+		return nil, fmt.Errorf("未找到指定的实体（modelIds 无匹配）")
+	}
+	targetModels, _ := target["models"].([]any)
+	created, updated := []string{}, []string{}
+	for _, cv := range converted {
+		c := cv.(map[string]any)
+		name := c["name"].(string)
+		found := false
+		for j, tv := range targetModels {
+			t, ok := tv.(map[string]any)
+			if !ok || t["name"] != name {
+				continue
+			}
+			c["id"] = t["id"]
+			if v, ok := t["catalogId"]; ok {
+				c["catalogId"] = v
+			} else if targetCatalogID != "" {
+				c["catalogId"] = targetCatalogID
+			}
+			if v, ok := t["createdAt"]; ok {
+				c["createdAt"] = v
+			}
+			targetModels[j] = c
+			found = true
+			updated = append(updated, name)
+			break
+		}
+		if !found {
+			if targetCatalogID != "" {
+				c["catalogId"] = targetCatalogID
+			}
+			targetModels = append(targetModels, c)
+			created = append(created, name)
+		}
+	}
+	target["models"] = targetModels
+	if err := dbPutLocked(targetProjectID, target); err != nil {
+		return nil, err
+	}
+	return map[string]any{"created": created, "updated": updated, "targetCount": len(targetModels)}, nil
 }

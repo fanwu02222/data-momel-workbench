@@ -106,6 +106,84 @@
     return col;
   }
 
+  // ---------- OLTP（业务库）约束 ----------
+  // fk 引用 "表.列" 解析；非法格式返回 null
+  function parseFk(fk) {
+    var m = /^([\w\u4e00-\u9fa5]+)\.([\w\u4e00-\u9fa5]+)$/.exec(String(fk || '').trim());
+    return m ? { table: m[1], column: m[2] } : null;
+  }
+
+  function isOEntity(m) { return (m.layer || '') === 'entity'; }
+
+  function colDefO(f, dialect) {
+    var col = '  ' + q(f.name, dialect) + ' ' + String(f.type || 'string').trim();
+    if (f.pk) col += ' NOT NULL';
+    else if (f.nullable === false) col += ' NOT NULL';
+    if (f.default !== undefined && f.default !== null && String(f.default) !== '') {
+      var d = String(f.default);
+      col += ' DEFAULT ' + (/^CURRENT_TIMESTAMP$/i.test(d) || /^-?\d/.test(d) ? d : "'" + esc(d) + "'");
+    }
+    if (f.unique && !f.pk) col += (dialect === 'mysql' ? ' UNIQUE KEY ' + q('uk_' + f.name, dialect) : ' UNIQUE');
+    if (f.comment) col += (dialect === 'postgresql' ? '' : " COMMENT '" + esc(f.comment) + "'");
+    return col;
+  }
+
+  function buildDdlVarsO(m, dialect) {
+    var fieldDefs = (m.fields || []).map(function (f) { return colDefO(f, dialect); });
+    var pks = (m.fields || []).filter(function (f) { return f.pk; }).map(function (f) { return q(f.name, dialect); });
+    var fks = [];
+    (m.fields || []).forEach(function (f) {
+      var ref = parseFk(f.fk);
+      if (ref) fks.push({ col: f.name, table: ref.table, column: ref.column, name: 'fk_' + m.name + '_' + f.name });
+    });
+    var fkClauses = fks.map(function (fk) {
+      return '  CONSTRAINT ' + q(fk.name, dialect) + ' FOREIGN KEY (' + q(fk.col, dialect) + ') REFERENCES ' + q(fk.table, dialect) + ' (' + q(fk.column, dialect) + ')';
+    }).join(',\n');
+    var idxs = Array.isArray(m.indexes) ? m.indexes : [];
+    var indexClauses = idxs.map(function (ix) {
+      var cols = (ix.fields || []).map(function (c) { return q(c, dialect); }).join(', ');
+      var pre = ix.unique ? 'UNIQUE ' : '';
+      return '  ' + pre + 'KEY ' + q(ix.name || 'idx_' + (ix.fields || []).join('_'), dialect) + ' (' + cols + ')';
+    }).join(',\n');
+    var indexStatements = idxs.map(function (ix) {
+      var cols = (ix.fields || []).map(function (c) { return q(c, dialect); }).join(', ');
+      return (ix.unique ? 'CREATE UNIQUE INDEX ' : 'CREATE INDEX ') + q((ix.name || 'idx_' + m.name + '_' + (ix.fields || []).join('_')), dialect) + ' ON ' + q(m.name, dialect) + ' (' + cols + ');';
+    }).join('\n');
+    var tail = [];
+    if (pks.length) tail.push('  PRIMARY KEY (' + pks.join(', ') + ')');
+    if (fkClauses) tail.push(fkClauses);
+    if (dialect === 'mysql' && indexClauses) tail.push(indexClauses);
+    return {
+      tableName: q(m.name, dialect),
+      rawTableName: String(m.name || ''),
+      tableComment: esc(m.cnName || m.name),
+      layerUpper: 'ENTITY',
+      columns: fieldDefs.join(',\n'),
+      partitionColumns: '',
+      allColumns: fieldDefs.join(',\n'),
+      pkClause: pks.length ? '\n  PRIMARY KEY (' + pks.join(', ') + ')' : '',
+      tableConstraints: tail.join(',\n'),
+      fkClauses: fkClauses,
+      indexClauses: indexClauses,
+      indexStatements: indexStatements,
+      orderByKeys: pks.length ? pks.join(', ') : 'tuple()',
+      chPartition: '',
+      partitionHint: '',
+      tableCommentClause: (dialect === 'postgresql' && m.cnName)
+        ? "COMMENT ON TABLE " + q(m.name, dialect) + " IS '" + esc(m.cnName) + "';" : '',
+      columnCommentClauses: (dialect === 'postgresql')
+        ? (m.fields || []).filter(function (f) { return f.comment; })
+          .map(function (f) { return "COMMENT ON COLUMN " + q(m.name, dialect) + '.' + q(f.name, dialect) + " IS '" + esc(f.comment) + "';"; })
+          .join('\n')
+        : ''
+    };
+  }
+
+  var OLTP_DDL_TEMPLATES = {
+    mysql: 'CREATE TABLE IF NOT EXISTS {{tableName}} (\n{{columns}}{{if:tableConstraints}},\n{{tableConstraints}}\n{{/if}}) COMMENT=\'{{tableComment}}\`;',
+    postgresql: 'CREATE TABLE IF NOT EXISTS {{tableName}} (\n{{columns}}{{if:tableConstraints}},\n{{tableConstraints}}\n{{/if}});\n{{if:tableCommentClause}}{{tableCommentClause}}\n{{/if}}{{columnCommentClauses}}\n{{indexStatements}}'
+  };
+
   function buildDdlVars(m, dialect) {
     var cols = (m.fields || []).map(function (f) { return colDef(f, dialect); });
     var parts = (m.partition || []).map(function (f) { return colDef(f, dialect); });
@@ -171,6 +249,15 @@
   // ---------- 生成入口 ----------
   function genDDL(m, dialect, project) {
     dialect = dialect || (project && project.dialect) || 'hive';
+    // OLTP 实体：专用模板（约束/索引完整 DDL），方言仅 mysql/postgresql
+    if (isOEntity(m) || (project && project.kind === 'oltp')) {
+      if (dialect !== 'mysql' && dialect !== 'postgresql') {
+        return '-- OLTP（业务库）实体仅支持 MySQL / PostgreSQL 方言，当前：' + dialectName(dialect);
+      }
+      var tplO = (project && project.sqlTemplates && project.sqlTemplates.ddl && String(project.sqlTemplates.ddl[dialect] || '').trim())
+        || OLTP_DDL_TEMPLATES[dialect];
+      return renderTemplate(tplO, buildDdlVarsO(m, dialect));
+    }
     var usingDefault = !(project && project.sqlTemplates && project.sqlTemplates.ddl && String(project.sqlTemplates.ddl[dialect] || '').trim());
     var out = renderTemplate(getTemplate(project, 'ddl', dialect), buildDdlVars(m, dialect));
     // 仅内置默认模板时追加 ODS 同步说明（自定义模板输出完全由用户掌控）
@@ -182,6 +269,9 @@
 
   function genDML(m, dialect, project) {
     dialect = dialect || (project && project.dialect) || 'hive';
+    if ((project && project.kind === 'oltp') || isOEntity(m)) {
+      return '-- OLTP（业务库）实体无 ETL 语句，仅生成建表 DDL。';
+    }
     if (m.layer === 'ods') {
       var src = m.source || '（未配置源系统）';
       return '-- ' + m.name + ' 为 ODS 层贴源表，数据来自：' + src + '\n' +
@@ -229,15 +319,34 @@
     } else {
       models = topoSort(project.models || []).order;
     }
+    var isOltp = project.kind === 'oltp';
     var parts = [];
-    var header = '/*\n * 数据仓库脚本（由数据建模工作台生成）\n * 项目：' + (project.name || '未命名') + '\n * 方言：' + dialectName(dialect) + '\n * 生成时间：' + new Date().toLocaleString('zh-CN') + '\n * 模型数：' + models.length + '\n */';
+    var header = '/*\n * ' + (isOltp ? '业务库脚本（由数据建模工作台生成）' : '数据仓库脚本（由数据建模工作台生成）') + '\n * 项目：' + (project.name || '未命名') + '\n * 方言：' + dialectName(dialect) + '\n * 生成时间：' + new Date().toLocaleString('zh-CN') + '\n * 模型数：' + models.length + '\n */';
     parts.push(header);
+    // OLTP：外键依赖排序（被引用表先建），仅 DDL
+    if (isOltp) {
+      var byNameO = {};
+      models.forEach(function (m) { byNameO[m.name] = m; });
+      var depOrder = [], seenO = {};
+      function visitO(m) {
+        if (seenO[m.name]) return;
+        seenO[m.name] = true;
+        (m.fields || []).forEach(function (f) {
+          var ref = parseFk(f.fk);
+          if (ref && byNameO[ref.table]) visitO(byNameO[ref.table]);
+        });
+        depOrder.push(m);
+      }
+      var roots = models.slice().sort(function (a, b) { return (a.fields || []).length - (b.fields || []).length; });
+      roots.forEach(visitO);
+      models = depOrder;
+    }
     models.forEach(function (m, i) {
       parts.push('\n' + '='.repeat(60));
-      parts.push('-- ' + (i + 1) + '. ' + '[' + (m.layer || '').toUpperCase() + '] ' + m.name + (m.cnName ? '（' + m.cnName + '）' : ''));
+      parts.push('-- ' + (i + 1) + '. ' + '[' + (isOltp ? 'ENTITY' : (m.layer || '').toUpperCase()) + '] ' + m.name + (m.cnName ? '（' + m.cnName + '）' : ''));
       parts.push('='.repeat(60));
       if (opts.parts !== 'dml') parts.push(genDDL(m, dialect, project));
-      if (opts.parts !== 'ddl') {
+      if (opts.parts !== 'ddl' && !isOltp) {
         parts.push('');
         parts.push(genDML(m, dialect, project));
       }
@@ -252,6 +361,7 @@
   return {
     genDDL: genDDL, genDML: genDML, genScript: genScript, topoSort: topoSort,
     dialectName: dialectName, renderTemplate: renderTemplate, previewTemplate: previewTemplate,
-    getTemplate: getTemplate, DEFAULT_TEMPLATES: DEFAULT_TEMPLATES, TEMPLATE_VARS: TEMPLATE_VARS, DIALECTS: DIALECTS
+    getTemplate: getTemplate, DEFAULT_TEMPLATES: DEFAULT_TEMPLATES, TEMPLATE_VARS: TEMPLATE_VARS, DIALECTS: DIALECTS,
+    parseFk: parseFk, buildDdlVarsO: buildDdlVarsO, OLTP_DDL_TEMPLATES: OLTP_DDL_TEMPLATES
   };
 });

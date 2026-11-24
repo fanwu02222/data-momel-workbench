@@ -102,6 +102,7 @@
         if (!item) return;
         var layerSel = previewBox.querySelector('select[data-layer="' + c.dataset.idx + '"]');
         if (layerSel) item.model.layer = layerSel.value;
+        if (Store.isOLTP()) item.model.layer = 'entity'; // OLTP 项目导入一律为实体
         var r = Store.importModel(item.model);
         if (r.created) created++; else replaced++;
       });
@@ -125,9 +126,11 @@
       tr.innerHTML =
         '<td><input type="checkbox" data-idx="' + i + '" checked></td>' +
         '<td class="mono">' + esc(m.name) + (Store.findByName(m.name) ? ' <span class="tag warn">将覆盖同名模型</span>' : '') + '</td>' +
-        '<td><select data-layer="' + i + '">' + ['ods', 'dim', 'dwd', 'dws', 'ads'].map(function (ly) {
-          return '<option value="' + ly + '"' + (m.layer === ly ? ' selected' : '') + '>' + ly.toUpperCase() + '</option>';
-        }).join('') + '</select></td>' +
+        '<td>' + (Store.isOLTP()
+        ? '<span class="mono">ENTITY</span>'
+        : '<select data-layer="' + i + '">' + ['ods', 'dim', 'dwd', 'dws', 'ads'].map(function (ly) {
+            return '<option value="' + ly + '"' + (m.layer === ly ? ' selected' : '') + '>' + ly.toUpperCase() + '</option>';
+          }).join('') + '</select>') + '</td>' +
         '<td class="center">' + (m.fields || []).length + '</td>' +
         '<td class="center">' + ((m.partition || []).map(function (p) { return esc(p.name); }).join(', ') || '—') + '</td>' +
         '<td class="mono small">' + esc((m.sources || []).map(function (s) { return s.name || s.alias; }).join(' / ') || '—') + '</td>' +
@@ -541,6 +544,102 @@
     openModal('导入 Excel 数据字典', wrap, [startBtn]);
   }
 
+  // ================= 实体推送到数仓（oltp → olap ODS 贴源） =================
+  function openPushToOds() {
+    var models = Store.getModels();
+    if (!models.length) { toast('当前项目还没有实体，先创建实体再推送', true); return; }
+    var olapProjects = (Store.projects || []).filter(function (p) { return p.kind !== 'oltp'; });
+    if (!olapProjects.length) { toast('没有可用的数仓（OLAP）项目作为推送目标', true); return; }
+    var wrap = el('div', 'push-dialog');
+    wrap.appendChild(el('p', 'hint',
+      '把当前项目的实体转换为 <b>ODS 贴源模型</b>写入目标数仓项目：保留字段（名/类型/注释/主键），溯源标记 <span class="mono">oltp://项目名/实体名</span>；外键 / 唯一 / 索引 / 缺省值等业务库约束不进入贴源层。同名模型<b>覆盖更新</b>。'));
+
+    var bar = el('div', 'form-grid push-grid');
+    bar.innerHTML =
+      '<label>目标数仓项目<select id="po-target">' + olapProjects.map(function (p) {
+        return '<option value="' + p.id + '">' + esc(p.name) + '（' + (p.modelCount || 0) + ' 个模型）</option>';
+      }).join('') + '</select></label>' +
+      '<label>挂载到目录节点（可选）<select id="po-catalog"><option value="">不指定（未归类）</option></select></label>';
+    wrap.appendChild(bar);
+
+    // 实体多选（默认全选）
+    var listHead = el('div', 'push-list-head');
+    listHead.innerHTML = '<label class="push-check-all"><input type="checkbox" id="po-all" checked><b>推送实体</b></label><span class="hint small" id="po-count"></span>';
+    wrap.appendChild(listHead);
+    var list = el('div', 'push-list');
+    list.innerHTML = models.map(function (m) {
+      var fk = (m.fields || []).filter(function (f) { return f.fk; }).length;
+      return '<label class="push-item"><input type="checkbox" data-mid="' + esc(m.id) + '" checked>'
+        + '<span class="mono push-name">' + esc(m.name || '（未命名）') + '</span>'
+        + '<span class="push-cn">' + esc(m.cnName || '') + '</span>'
+        + '<span class="push-meta">' + (m.fields || []).length + ' 字段' + (fk ? ' · ' + fk + ' FK' : '') + '</span></label>';
+    }).join('');
+    wrap.appendChild(list);
+
+    function syncCount() {
+      var n = list.querySelectorAll('input[data-mid]:checked').length;
+      var total = models.length;
+      var c = listHead.querySelector('#po-count');
+      if (c) c.textContent = '已选 ' + n + ' / ' + total + ' 个实体';
+      var all = listHead.querySelector('#po-all');
+      if (all) all.checked = n === total;
+    }
+    list.addEventListener('change', syncCount);
+    var allCb = listHead.querySelector('#po-all');
+    allCb.addEventListener('change', function () {
+      list.querySelectorAll('input[data-mid]').forEach(function (c) { c.checked = allCb.checked; });
+      syncCount();
+    });
+    syncCount();
+
+    // 目标项目切换 → 拉取其目录树供挂载选择
+    var targetSel = bar.querySelector('#po-target');
+    var catSel = bar.querySelector('#po-catalog');
+    function loadTargetCatalog() {
+      catSel.innerHTML = '<option value="">不指定（未归类）</option>';
+      var id = parseInt(targetSel.value, 10);
+      if (!id) return;
+      fetch('/api/catalog?projectId=' + id).then(function (r) { return r.json(); }).then(function (d) {
+        if (parseInt(targetSel.value, 10) !== id) return; // 已切换到别的项目
+        (function walk(nodes, path) {
+          (nodes || []).forEach(function (n) {
+            var p = path.concat(n.cnName || n.name);
+            var o = el('option');
+            o.value = n.id;
+            o.textContent = 'L' + n.level + ' · ' + p.join(' / ');
+            catSel.appendChild(o);
+            walk(n.children || [], p);
+          });
+        })(d.nodes || [], []);
+      }).catch(function () { });
+    }
+    targetSel.addEventListener('change', loadTargetCatalog);
+    loadTargetCatalog();
+
+    var btn = el('button', 'btn primary');
+    btn.textContent = '⇢ 推送';
+    btn.onclick = function () {
+      var ids = Array.prototype.map.call(list.querySelectorAll('input[data-mid]:checked'), function (c) { return c.dataset.mid; });
+      if (!ids.length) { toast('请至少选择一个实体', true); return; }
+      var targetId = parseInt(targetSel.value, 10);
+      if (!targetId) { toast('请选择目标数仓项目', true); return; }
+      btn.disabled = true;
+      btn.textContent = '推送中…';
+      Store.pushToOds(ids, targetId, catSel.value).then(function (d) {
+        closeModal();
+        var targetName = (olapProjects.filter(function (p) { return p.id === targetId; })[0] || {}).name || ('项目 ' + targetId);
+        toast('推送完成：新建 ' + (d.created || []).length + ' 个 / 更新 ' + (d.updated || []).length + ' 个 → 「' + targetName + '」');
+        // 目标项目模型数已变化，刷新列表缓存
+        Store.refreshProjects().catch(function () { });
+      }).catch(function (e) {
+        btn.disabled = false;
+        btn.textContent = '⇢ 推送';
+        toast('推送失败：' + e.message, true);
+      });
+    };
+    openModal('推送到数仓（实体 → ODS 贴源）', wrap, [btn]);
+  }
+
   // ================= JSON 导入导出 =================
   function exportJSON() {
     var blob = new Blob([JSON.stringify(Store.project, null, 2)], { type: 'application/json' });
@@ -585,6 +684,7 @@
     importExcel: importExcel,
     exportJSON: exportJSON,
     importJSON: importJSON,
+    openPushToOds: openPushToOds,
     openModal: openModal,
     closeModal: closeModal,
     toast: toast

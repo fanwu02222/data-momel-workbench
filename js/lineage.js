@@ -438,6 +438,10 @@
     computeModelLineage: computeModelLineage,
     renderFieldLineage: renderFieldLineage,
     renderModelLineage: renderModelLineage,
-    LAYER_COLORS: LAYER_COLORS
+    LAYER_COLORS: LAYER_COLORS,
+    // SVG 基础设施（ER 图等复用，行为不变）
+    svgEl: svgEl,
+    attachPanZoom: attachPanZoom,
+    attachNodeDrag: attachNodeDrag
   };
 });

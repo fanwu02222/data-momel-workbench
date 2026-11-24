@@ -824,6 +824,96 @@ b { font-weight: 600; }
 .tbl td input[data-fx] { background: var(--panel-2); }
 .tbl th { overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
 
+/* ================= OLTP（业务库建模）模式 ================= */
+/* oltp 项目：侧栏只留目录树视图（隐藏「按分层」切换与分层图例） */
+body.oltp .sidebar-toggle { display: none; }
+body.oltp .layer-legend { display: none; }
+/* 新建项目弹窗：类型单选卡片 */
+.kind-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.kind-opt {
+  display: flex; align-items: flex-start; gap: 10px; padding: 12px 13px;
+  border: 1.5px solid var(--line); border-radius: var(--r-lg); cursor: pointer;
+  background: var(--panel); transition: border-color .14s, background .14s, box-shadow .14s;
+}
+.kind-opt:hover { border-color: var(--line-2); background: var(--panel-2); }
+.kind-opt:has(input:checked) { border-color: var(--accent); background: var(--accent-wash); box-shadow: 0 0 0 3px var(--accent-ring); }
+.kind-opt input { display: none; }
+.kind-ico { font-size: 20px; line-height: 1.2; flex-shrink: 0; }
+.kind-txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.kind-txt b { font-size: 12.5px; color: var(--text); }
+.kind-txt small { font-size: 10.5px; color: var(--text-3); line-height: 1.5; }
+
+/* oltp 字段表：FK 两级下拉 / 默认值 */
+.oltp-field-tbl { min-width: 1040px; }
+.fk-cell { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.fk-cell select {
+  min-width: 0; max-width: 999px; height: 26px; border: 1px solid transparent; border-radius: 6px;
+  padding: 0 4px; font-size: 11px; background: transparent; color: var(--text); cursor: pointer;
+}
+.fk-cell select:hover { background: var(--panel); border-color: var(--line); }
+.fk-cell select:focus { outline: none; border-color: var(--accent); background: var(--panel); box-shadow: 0 0 0 3px var(--accent-ring); }
+.fk-cell .fk-entity { flex: 1.15; }
+.fk-cell .fk-col { flex: 1; font-family: var(--mono); font-size: 10.5px; }
+.fk-cell select:disabled { opacity: .5; cursor: default; }
+.fdefault { font-size: 11px; }
+.tbl td input[type="checkbox"] { vertical-align: middle; }
+
+/* 索引卡片 */
+.idx-list { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; }
+.idx-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 11px;
+  border: 1px solid var(--line); border-radius: 11px; background: var(--panel); min-width: 0;
+}
+.idx-row:hover { border-color: var(--line-2); background: var(--panel-2); }
+.idx-name {
+  width: 190px; flex-shrink: 0; height: 28px; border: 1px solid var(--line); border-radius: 6px;
+  padding: 0 8px; font-size: 11.5px; background: var(--panel); color: var(--text);
+}
+.idx-name:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+.idx-chips { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; flex-wrap: wrap; }
+.idx-chip {
+  display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px;
+  border-radius: 999px; border: 1px dashed var(--line-2); background: transparent;
+  font-family: var(--mono); font-size: 10px; color: var(--text-3); transition: all .12s;
+}
+.idx-chip:hover { border-color: var(--accent); color: var(--accent-2); background: var(--accent-wash); }
+.idx-chip.on {
+  border-style: solid; border-color: var(--accent); background: var(--accent-wash); color: var(--accent-2); font-weight: 600;
+}
+.idx-chip.on i {
+  font-style: normal; width: 15px; height: 15px; border-radius: 50%; display: inline-grid; place-items: center;
+  background: var(--accent); color: #fff; font-size: 8.5px; font-weight: 700; flex-shrink: 0;
+}
+.idx-uniq { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-2); flex-shrink: 0; cursor: pointer; }
+
+/* 推送到数仓弹窗 */
+.push-grid { grid-template-columns: 1fr 1fr; margin-top: 10px; }
+.push-list-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin: 14px 0 6px;
+}
+.push-check-all { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.push-list {
+  display: flex; flex-direction: column; gap: 3px; max-height: 264px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px 10px; background: var(--panel-2);
+}
+.push-item {
+  display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 8px;
+  cursor: pointer; transition: background .1s; font-size: 12px;
+}
+.push-item:hover { background: var(--panel); }
+.push-item input { accent-color: var(--accent); flex-shrink: 0; }
+.push-name { font-size: 11.5px; font-weight: 600; color: var(--text); }
+.push-cn { color: var(--text-3); font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.push-meta { margin-left: auto; color: var(--text-3); font-size: 10px; font-family: var(--mono); flex-shrink: 0; }
+
+/* ER 模型图（复用血缘画布容器） */
+.er-box-body { transition: stroke .12s; }
+.er-box:hover .er-box-body { stroke: var(--accent); }
+.er-title { font-family: var(--mono); }
+.er-edge-label { paint-order: stroke; stroke: var(--panel); stroke-width: 3px; stroke-linejoin: round; }
+.lnode.bad { border-color: var(--danger); color: var(--danger); }
+
 /* ================= Toast ================= */
 .toast {
   position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(16px);

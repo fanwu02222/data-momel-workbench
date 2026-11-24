@@ -54,6 +54,10 @@
     // 在深度 0 上跳过直到出现给定关键字集合中的词或语句结束
     var STOP_AT_SELECT_TAIL = { GROUP: 1, ORDER: 1, HAVING: 1, LIMIT: 1, WINDOW: 1, QUALIFY: 1, UNION: 1, WHERE: 1 };
     var JOIN_WORDS = { JOIN: 1, LEFT: 1, RIGHT: 1, FULL: 1, INNER: 1, CROSS: 1, OUTER: 1, SEMI: 1, ANTI: 1, LATERAL: 1 };
+    // OLTP 约束提取的暂存器（parseColumnDefs 收尾时回填到字段）
+    var pendingFks = [];
+    var pendingPks = [];
+    var pendingUniqueCols = [];
     var TABLE_OPT_KW = { COMMENT: 1, PARTITIONED: 1, PARTITION: 1, STORED: 1, LOCATION: 1, ROW: 1, CLUSTERED: 1, TBLPROPERTIES: 1, ENGINE: 1, ORDER: 1, PRIMARY: 1, SETTINGS: 1, AS: 1, WITH: 1, SORT: 1, DISTRIBUTED: 1, LIFE: 1 };
 
     function parseTableRef() {
@@ -199,21 +203,14 @@
     // 解析列定义块（含类型与 COMMENT），返回 {fields, partitions} 视上下文
     function parseColumnDefs() {
       var fields = [];
+      var oltpIndexes = [];
       eatPunct('(');
       while (!isPunct(')') && peek().type !== 'eof') {
         if (isPunct(',')) { next(); continue; }
         var t0 = peek();
-        // 约束行：PRIMARY KEY / UNIQUE / KEY / CONSTRAINT / INDEX → 整行跳过（不消费列表结尾的 ')'）
+        // 约束行：PRIMARY KEY / UNIQUE / KEY / CONSTRAINT / INDEX / FOREIGN → 解析提取（OLTP）或跳过
         if (t0.type === 'ident' && ['PRIMARY', 'UNIQUE', 'KEY', 'CONSTRAINT', 'INDEX', 'FOREIGN'].indexOf(t0.value.toUpperCase()) >= 0) {
-          var d0 = 0;
-          while (peek().type !== 'eof') {
-            var ct = peek();
-            if (d0 === 0 && ct.type === 'punct' && ct.value === ')') break;
-            if (ct.type === 'punct' && ct.value === '(') d0++;
-            if (ct.type === 'punct' && ct.value === ')') d0--;
-            next();
-            if (d0 === 0 && ct.type === 'punct' && ct.value === ',') break;
-          }
+          parseTableConstraint(oltpIndexes);
           continue;
         }
         var nameTok = next();
@@ -225,24 +222,87 @@
           var tt = peek();
           if (depthT === 0 && tt.type === 'punct' && (tt.value === ',' || tt.value === ')')) break;
           if (depthT === 0 && tt.type === 'ident' && tt.value.toUpperCase() === 'COMMENT') break;
-          if (depthT === 0 && tt.type === 'ident' && ['NOT', 'NULL', 'DEFAULT', 'AUTO_INCREMENT', 'PRIMARY', 'COLLATE', 'CHARACTER', 'PRECISION'].indexOf(tt.value.toUpperCase()) >= 0) break;
+          if (depthT === 0 && tt.type === 'ident' && ['NOT', 'NULL', 'DEFAULT', 'AUTO_INCREMENT', 'PRIMARY', 'UNIQUE', 'REFERENCES', 'COLLATE', 'CHARACTER', 'PRECISION'].indexOf(tt.value.toUpperCase()) >= 0) break;
           if (tt.type === 'punct' && tt.value === '(') depthT++;
           if (tt.type === 'punct' && tt.value === ')') depthT--;
           next(); typeEnd = tt;
         }
         var ftype = srcText(typeStart, typeEnd) || 'string';
         if (/^(not|null|default)$/i.test(ftype)) ftype = 'string';
-        // 修饰：NOT NULL / DEFAULT / PRIMARY KEY 等 → 跳到 ',' 或 ')' 或 COMMENT
+        // 修饰：NOT NULL / DEFAULT / PRIMARY KEY / UNIQUE / REFERENCES / COMMENT
         var comment = '';
+        var fnullable, fdefault, funique, fpk, ffk;
+        fnullable = fdefault = funique = fpk = ffk = undefined; // var 提升陷阱：列间显式重置
         while (peek().type !== 'eof') {
           if (isPunct(',') || isPunct(')')) break;
           if (kw('COMMENT')) { next(); var ct2 = peek(); if (ct2.type === 'string') { comment = ct2.value; next(); } continue; }
+          if (kw('NOT')) { next(); if (kw('NULL')) next(); fnullable = false; continue; }
+          if (kw('NULL')) { next(); fnullable = true; continue; }
+          if (kw('DEFAULT')) {
+            next();
+            var dt = peek();
+            if (dt.type === 'string') { fdefault = dt.value; next(); }
+            else if (dt.type === 'op' && dt.value === '-') { next(); var dn = next(); fdefault = '-' + (dn ? dn.value : '0'); }
+            else if (dt.type === 'ident' || dt.type === 'number') { fdefault = dt.value; next(); }
+            continue;
+          }
+          if (kw('PRIMARY')) { next(); if (kw('KEY')) next(); fpk = true; fnullable = false; continue; }
+          if (kw('UNIQUE')) { next(); if (kw('KEY')) next(); funique = true; continue; }
+          if (kw('REFERENCES')) {
+            next();
+            var rname = next();
+            if (rname && rname.type === 'ident') {
+              var rcol = '';
+              if (isPunct('(')) {
+                next();
+                var rc = next();
+                if (rc && rc.type === 'ident') rcol = rc.value;
+                if (isPunct(')')) next();
+              }
+              ffk = rname.value + (rcol ? '.' + rcol : '');
+            }
+            continue;
+          }
           next();
         }
-        fields.push({ name: fname, type: ftype, comment: comment });
+        var fd = { name: fname, type: ftype, comment: comment, pk: !!fpk };
+        if (fnullable === false && !fpk) fd.nullable = false;
+        if (funique) fd.unique = true;
+        if (fdefault !== undefined && fdefault !== '') fd.default = fdefault;
+        if (ffk) fd.fk = ffk;
+        fields.push(fd);
       }
       eatPunct(')');
+      if (oltpIndexes.length) fields._indexes = oltpIndexes;
       return fields;
+    }
+
+    // 表级约束行：CONSTRAINT fk FOREIGN KEY (a) REFERENCES t(b) / [UNIQUE] KEY idx (cols) / PRIMARY KEY (..)
+    // OLTP 建模扩展：提取 FK/索引/唯一键/复合主键，暂存待收尾回填
+    function parseTableConstraint(oltpIndexes) {
+      var d0 = 0, toks = [];
+      while (peek().type !== 'eof') {
+        var ct = peek();
+        if (d0 === 0 && ct.type === 'punct' && ct.value === ')') break;
+        if (ct.type === 'punct' && ct.value === '(') d0++;
+        if (ct.type === 'punct' && ct.value === ')') d0--;
+        toks.push(ct); next();
+        if (d0 === 0 && ct.type === 'punct' && ct.value === ',') { toks.pop(); break; }
+      }
+      var s = toks.map(function (t) { return t.value; }).join(' ');
+      var fkM = /FOREIGN\s+KEY\s*\(\s*[`"']?([\w\u4e00-\u9fa5]+)[`"']?\s*\)\s*REFERENCES\s+[`"']?([\w\u4e00-\u9fa5]+)[`"']?\s*\(\s*[`"']?([\w\u4e00-\u9fa5]+)[`"']?\s*\)/i.exec(s);
+      if (fkM) { pendingFks.push({ col: fkM[1], table: fkM[2], column: fkM[3] }); return; }
+      var pkM = /PRIMARY\s+KEY\s*\(([^)]+)\)/i.exec(s);
+      if (pkM) { pkM[1].split(',').forEach(function (c) { pendingPks.push(c.trim().replace(/[`"]/g, '')); }); return; }
+      var ixM = /(?:(UNIQUE)\s+)?(?:KEY|INDEX)\s+[`"']?([\w\u4e00-\u9fa5]+)[`"']?\s*\(([^)]+)\)/i.exec(s);
+      if (ixM && !/FOREIGN|PRIMARY/i.test(s)) {
+        var cols = ixM[3].split(',').map(function (c) { return c.trim().replace(/[`"]/g, ''); }).filter(Boolean);
+        if (cols.length === 1 && ixM[1]) {
+          pendingUniqueCols.push(cols[0]);
+        } else {
+          oltpIndexes.push({ name: ixM[2], fields: cols, unique: !!ixM[1] });
+        }
+      }
     }
 
     // CREATE TABLE 后置选项循环
@@ -400,6 +460,7 @@
         var model = baseModel(fullName);
         var colTypes = null;
         var colFields = null;
+        pendingFks = []; pendingPks = []; pendingUniqueCols = [];
         if (isPunct('(')) {
           colFields = parseColumnDefs();
           // CREATE TABLE t (cols) AS SELECT —— 列名顺序映射
@@ -407,10 +468,25 @@
           colFields.forEach(function (f) { colTypes[f.name] = f.type; });
         }
         var after = parseTableOptions(model);
+        // OLTP 约束回填：表级 FK / 复合 PK / 单列唯一 / 索引（仅显式列定义时）
+        var oltpIdx = colFields ? colFields._indexes : null;
         // 显式列定义优先（类型与注释完整）
         if (colFields && colFields.length) {
           model.fields = colFields.map(function (f) { return { name: f.name, type: f.type, comment: f.comment, pk: false, expr: '' }; });
           if (model.cnName && !model.desc) model.desc = '';
+          // 保留列级 OLTP 属性（nullable/unique/default/fk/inline pk）
+          var byCol = {};
+          colFields.forEach(function (f) { byCol[f.name] = f; });
+          model.fields.forEach(function (f) {
+            var c = byCol[f.name];
+            if (!c) return;
+            if (c.pk) f.pk = true;
+            if (c.nullable === false && !c.pk) f.nullable = false;
+            if (c.unique) f.unique = true;
+            if (c.default !== undefined && c.default !== '') f.default = c.default;
+            if (c.fk) f.fk = c.fk;
+          });
+          if (oltpIdx && oltpIdx.length) model.indexes = oltpIdx;
         }
         if (after === 'select') {
           var sel = parseSelect();
@@ -425,6 +501,17 @@
           if (model.partition) m2.partition = m2.partition.concat(model.partition);
           model = m2;
         }
+        // 表级约束回填（PRIMARY KEY(...) / FOREIGN KEY / 单列 UNIQUE）
+        if (model.fields && model.fields.length) {
+          model.fields.forEach(function (f) {
+            if (pendingPks.indexOf(f.name) >= 0) { f.pk = true; delete f.nullable; }
+            if (pendingUniqueCols.indexOf(f.name) >= 0) f.unique = true;
+            for (var i = 0; i < pendingFks.length; i++) {
+              if (pendingFks[i].col === f.name) f.fk = pendingFks[i].table + '.' + pendingFks[i].column;
+            }
+          });
+        }
+        pendingFks = []; pendingPks = []; pendingUniqueCols = [];
         return finish(model, null, null);
       }
       if (kw('INSERT')) {

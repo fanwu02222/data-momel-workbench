@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>数据建模工作台 · 数仓模型设计</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='2' width='20' height='20' rx='6' fill='%237c3aed'/%3E%3Crect x='6' y='6' width='5' height='5' rx='1.6' fill='%23fff'/%3E%3Crect x='13' y='6' width='5' height='5' rx='1.6' fill='%23fff' opacity='.65'/%3E%3Crect x='6' y='13' width='5' height='5' rx='1.6' fill='%23fff' opacity='.65'/%3E%3Crect x='13' y='13' width='5' height='5' rx='1.6' fill='%23fff' opacity='.42'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="css/style.css?v=20261123e">
+<link rel="stylesheet" href="css/style.css?v=20261124a">
 <script>try{var t=localStorage.getItem('dw-workbench-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
 </head>
 <body>
@@ -39,6 +39,9 @@
   </div>
 
   <div class="topbar-actions">
+    <button class="btn" id="btn-push-ods" title="把实体转换为 ODS 贴源模型推送到数仓项目" style="display:none">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 5.2h8.2M8.2 2.6 11 5.2 8.2 7.8"/><path d="M13.4 10.8H5.2M7.8 13.4 5 10.8l2.8-2.6"/></svg><span>⇢ 推送到数仓</span>
+    </button>
     <button class="btn" id="btn-import" title="粘贴 SQL 反解析为模型">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.6v7M5.2 6.9 8 9.7l2.8-2.8M2.8 13.2h10.4"/></svg><span>导入 SQL</span>
     </button>
@@ -110,7 +113,7 @@
         <span><i class="layer-dot ads"></i>应用</span>
       </div>
       <button class="btn small soft" id="btn-new-model" style="width:100%;justify-content:center">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3.6v8.8M3.6 8h8.8"/></svg>新建模型
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3.6v8.8M3.6 8h8.8"/></svg><span id="new-model-label">新建模型</span>
       </button>
     </div>
 
@@ -138,7 +141,7 @@
       </button>
       <button data-tab="lineage">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="3.6" cy="8" r="1.7"/><circle cx="12.4" cy="3.9" r="1.7"/><circle cx="12.4" cy="12.1" r="1.7"/><path d="M5.2 7.2 10.8 4.6M5.2 8.8l5.6 2.6"/></svg>
-        血缘关系
+        <span class="tab-label">血缘关系</span>
       </button>
       <button data-tab="sql">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.6 4.6 2.2 8l3.4 3.4M10.4 4.6 13.8 8l-3.4 3.4"/></svg>
@@ -156,15 +159,16 @@
 
 <div id="modal-root"></div>
 
-<script src="js/sql-lexer.js?v=20261123e"></script>
-<script src="js/sql-parser.js?v=20261123e"></script>
-<script src="js/sql-generator.js?v=20261123e"></script>
-<script src="js/lineage.js?v=20261123e"></script>
-<script src="js/sample.js?v=20261123e"></script>
-<script src="js/xlsx-export.js?v=20261123e"></script>
-<script src="js/store.js?v=20261123e"></script>
-<script src="js/editor.js?v=20261123e"></script>
-<script src="js/dialogs.js?v=20261123e"></script>
-<script src="js/app.js?v=20261123e"></script>
+<script src="js/sql-lexer.js?v=20261124a"></script>
+<script src="js/sql-parser.js?v=20261124a"></script>
+<script src="js/sql-generator.js?v=20261124a"></script>
+<script src="js/lineage.js?v=20261124a"></script>
+<script src="js/er.js?v=20261124a"></script>
+<script src="js/sample.js?v=20261124a"></script>
+<script src="js/xlsx-export.js?v=20261124a"></script>
+<script src="js/store.js?v=20261124a"></script>
+<script src="js/editor.js?v=20261124a"></script>
+<script src="js/dialogs.js?v=20261124a"></script>
+<script src="js/app.js?v=20261124a"></script>
 </body>
 </html>

@@ -200,6 +200,40 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ================= OLTP → ODS 推送 =================
+	if p == "/api/push-to-ods" && r.Method == "POST" {
+		body, err := readBody(w, r)
+		if err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		var req struct {
+			ProjectID       float64  `json:"projectId"`
+			ModelIDs        []string `json:"modelIds"`
+			TargetProjectID float64  `json:"targetProjectId"`
+			TargetCatalogID string   `json:"targetCatalogId"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		if req.ProjectID <= 0 || req.TargetProjectID <= 0 {
+			sendJSON(w, 400, map[string]any{"error": "projectId 与 targetProjectId 不能为空"})
+			return
+		}
+		if len(req.ModelIDs) == 0 {
+			sendJSON(w, 400, map[string]any{"error": "modelIds 不能为空"})
+			return
+		}
+		res, err := dbPushToOds(int64(req.ProjectID), req.ModelIDs, int64(req.TargetProjectID), strings.TrimSpace(req.TargetCatalogID))
+		if err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		sendJSON(w, 200, map[string]any{"ok": true, "created": res["created"], "updated": res["updated"], "targetCount": res["targetCount"]})
+		return
+	}
+
 	// ================= 多项目管理 =================
 	if p == "/api/projects" {
 		switch r.Method {
@@ -214,6 +248,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			var req struct {
 				Name    string `json:"name"`
 				Dialect string `json:"dialect"`
+				Kind    string `json:"kind"` // oltp | olap（缺省 olap）
 			}
 			if err := json.Unmarshal(body, &req); err != nil {
 				sendJSON(w, 400, map[string]any{"error": err.Error()})
@@ -225,9 +260,13 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			}
 			dialect := strings.TrimSpace(req.Dialect)
 			if dialect == "" {
-				dialect = "hive"
+				if strings.TrimSpace(req.Kind) == "oltp" {
+					dialect = "mysql"
+				} else {
+					dialect = "hive"
+				}
 			}
-			proj, err := dbCreateProject(name, dialect)
+			proj, err := dbCreateProject(name, dialect, strings.TrimSpace(req.Kind))
 			if err != nil {
 				sendJSON(w, 400, map[string]any{"error": err.Error()})
 				return

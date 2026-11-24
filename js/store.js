@@ -26,6 +26,9 @@
 
     newId: function () { return 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7); },
 
+    // 当前项目是否 OLTP（业务库建模）：kind 缺省视为 olap（兼容旧项目）
+    isOLTP: function () { return !!(this.project && this.project.kind === 'oltp'); },
+
     // 当前项目的查询串（/api/project、/api/import/excel 等使用）
     apiProjectId: function () { return '?projectId=' + this.projectId; },
 
@@ -70,7 +73,7 @@
           // 404（项目行缺失，如已被删除）：用项目列表里的元信息给一个空项目，不再回退旧的单项目浏览器缓存
           var meta = null;
           self.projects.forEach(function (p) { if (p.id === id) meta = p; });
-          self.project = { name: (meta && meta.name) || '未命名项目', dialect: (meta && meta.dialect) || 'hive', models: [] };
+          self.project = { name: (meta && meta.name) || '未命名项目', dialect: (meta && meta.dialect) || 'hive', kind: (meta && meta.kind) || 'olap', models: [] };
         }
         self.normalize();
         self.selectedId = self.project.models.length ? self.project.models[0].id : null;
@@ -154,19 +157,38 @@
         });
       }).then(function (d) { self.refreshProjects(); return d; });
     },
-    // 新建项目：POST 成功后刷新项目列表缓存，返回 {ok, project}
-    createProject: function (name, dialect) {
+    // 新建项目：POST 成功后刷新项目列表缓存，返回 {ok, project}（kind: 'oltp'|'olap'，缺省 olap）
+    createProject: function (name, dialect, kind) {
       var self = this;
       return fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name, dialect: dialect })
+        body: JSON.stringify({ name: name, dialect: dialect, kind: kind || 'olap' })
       }).then(function (r) {
         return r.json().then(function (d) {
           if (!r.ok) throw new Error(d && d.error || ('http ' + r.status));
           return d;
         });
       }).then(function (d) { return self.refreshProjects().then(function () { return d; }); });
+    },
+
+    // 实体推送到数仓：把 oltp 实体转换为 ODS 贴源模型写入目标 olap 项目
+    pushToOds: function (modelIds, targetProjectId, targetCatalogId) {
+      return fetch('/api/push-to-ods', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: this.projectId,
+          modelIds: modelIds,
+          targetProjectId: targetProjectId,
+          targetCatalogId: targetCatalogId || ''
+        })
+      }).then(function (r) {
+        return r.json().then(function (d) {
+          if (!r.ok) throw new Error(d && d.error || ('http ' + r.status));
+          return d;
+        });
+      });
     },
 
     // ---------- 目录树 CRUD（服务端为准，改完重拉树并广播） ----------
@@ -335,10 +357,11 @@
 
     newModel: function (layer) {
       var m = {
-        id: this.newId(), layer: layer || 'ods',
+        id: this.newId(), layer: this.isOLTP() ? 'entity' : (layer || 'ods'),
         name: '', cnName: '', desc: '', source: '', notes: '',
         fields: [], partition: [], sources: [], where: '', groupBy: ''
       };
+      if (this.isOLTP()) m.indexes = []; // oltp 实体：索引卡片
       this.project.models.push(m);
       this.selectedId = m.id;
       this.touch(); return m;

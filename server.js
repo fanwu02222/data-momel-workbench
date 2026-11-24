@@ -186,7 +186,7 @@ function dbPutProject(data) {
       stmts.insModel.run(id, String(m.layer || 'ods'), String(m.name || ''), String(m.cnName || ''),
         String(m.desc || ''), String(m.source || ''), String(m.notes || ''),
         String(m.where || ''), String(m.groupBy || ''), i, m.createdAt || now,
-        splitExtra(m, MODEL_KNOWN));
+        splitExtra(m, MODEL_KNOWN, true));
       (Array.isArray(m.fields) ? m.fields : []).forEach(function (f, j) {
         stmts.insField.run(id, String(f.name || ''), String(f.type || 'string'), String(f.comment || ''), f.pk ? 1 : 0, String(f.expr || ''), j,
           splitExtra(f, FIELD_KNOWN));
