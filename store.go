@@ -125,7 +125,8 @@ func openStore() error {
 	snapPath = filepath.Join(dataDir, "project.json")
 	var err error
 	// DSN 每连接生效：外键 + WAL + 忙等待（连接池 >1 时保证语义一致）
-	dsn := "file:" + dbFilePath + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+	// 注意：file: URI 中目录分隔必须是正斜杠（Windows 反斜杠会被 SQLite URI 解析拒绝）
+	dsn := "file:" + filepath.ToSlash(dbFilePath) + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 	db, err = sql.Open("sqlite", dsn)
 	if err != nil {
 		return err

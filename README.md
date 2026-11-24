@@ -11,6 +11,8 @@ go build -o dw-workbench-go .   # 或使用预编译二进制
 ./dw-workbench-go               # 默认 http://127.0.0.1:8130，PORT/HOST/DW_DATA_DIR 可覆盖
 ```
 
+**Windows 用户**：解压 zip 后双击 exe 即可——程序会**自动打开默认浏览器**。黑色控制台窗口是服务进程指示（显示日志），**关闭窗口即退出程序**；数据保存在 exe 同目录下（`workbench.db`）。首次运行若被 Windows SmartScreen 拦截（开源软件无商业签名证书的正常提示），点「更多信息」→「仍要运行」即可。
+
 开发联调模式（前端从磁盘读取，改 js/css 刷新即生效）：`./dw-workbench-go -dev`
 
 ### 方式二：Node 版（零依赖，需 Node 22.5+）

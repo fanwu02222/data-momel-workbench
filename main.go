@@ -9,16 +9,20 @@
 package main
 
 import (
+	"bufio"
 	"embed"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -459,12 +463,10 @@ func main() {
 		dataDir = appRoot
 	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		fmt.Println("[dw-workbench] 数据目录创建失败:", err)
-		os.Exit(1)
+		fatalErr("数据目录创建失败", err)
 	}
 	if err := openStore(); err != nil {
-		fmt.Println("[dw-workbench] 数据库打开失败:", err)
-		os.Exit(1)
+		fatalErr("数据库打开失败", err)
 	}
 	migrateIfNeeded()
 
@@ -488,7 +490,49 @@ func main() {
 		fmt.Println("[dw-workbench] 开发模式： 前端从磁盘加载（" + appRoot + "）")
 	}
 
-	http.ListenAndServe(host+":"+port, http.HandlerFunc(handler))
+	// 端口先行监听：失败（如被占用）给出可见错误，而不是静默退出
+	ln, err := net.Listen("tcp", host+":"+port)
+	if err != nil {
+		fatalErr("监听端口失败（端口被占用或无权限） "+host+":"+port, err)
+	}
+
+	go func() {
+		if err := http.Serve(ln, http.HandlerFunc(handler)); err != nil {
+			fatalErr("服务异常退出", err)
+		}
+	}()
+
+	// 桌面软件体验：启动成功后自动打开默认浏览器
+	url := "http://" + displayHost + ":" + port + "/"
+	openBrowser(url)
+
+	select {} // 阻塞主协程（Windows 下保持控制台窗口 = 服务运行指示）
+}
+
+// fatalErr：打印错误；Windows 双击运行时等用户按键再退出，避免窗口闪退看不到信息
+func fatalErr(msg string, err error) {
+	fmt.Println("[dw-workbench] " + msg + ": " + err.Error())
+	fmt.Println("[dw-workbench] 运行中止。")
+	if runtime.GOOS == "windows" {
+		fmt.Print("按回车键关闭窗口…")
+		bufio.NewReader(os.Stdin).ReadString('\n')
+	}
+	os.Exit(1)
+}
+
+// openBrowser：调用系统默认浏览器打开地址（失败仅忽略，不影响服务）
+func openBrowser(u string) {
+	var c *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		// start 的第一个 "" 是窗口标题占位，防止 URL 被当作标题
+		c = exec.Command("cmd", "/c", "start", "", u)
+	case "darwin":
+		c = exec.Command("open", u)
+	default:
+		c = exec.Command("xdg-open", u)
+	}
+	_ = c.Start()
 }
 
 // 供静态 embed 校验引用（避免 import 未用报错的显式引用）
