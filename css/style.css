@@ -1114,3 +1114,17 @@ body.oltp .layer-legend { display: none; }
 .tb-row:hover { background: var(--panel-2); }
 .tb-name { font-size: 12px; font-weight: 600; }
 .tb-comment { font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ================= 顶栏三段菜单（项目管理 / 数据模型 / 数据源） ================= */
+.tm-menu { align-self: center; }
+.tm-summary { gap: 6px; font-weight: 600; white-space: nowrap; }
+.tm-summary svg:first-child { width: 14px; height: 14px; opacity: .85; }
+.tm-caret { width: 11px; height: 11px; opacity: .55; transition: transform .15s ease; }
+.tm-menu[open] .tm-caret { transform: rotate(180deg); }
+.tm-menu[open] > .tm-summary { background: var(--panel-2); }
+.tm-menu .menu-pop { min-width: 240px; }
+.tm-menu .menu-pop button { white-space: nowrap; }
+@media (max-width: 1180px) {
+  .tm-summary span { display: none; }
+  .tm-summary { padding-left: 8px; padding-right: 6px; }
+}

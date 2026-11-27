@@ -64,7 +64,8 @@
   }
 
   // ================= SQL 导入（粘贴 SQL / 从数据库导入 双页签） =================
-  function openImportSQL() {
+  function openImportSQL(opts) {
+    opts = opts || {};
     var wrap = el('div', 'import-dialog');
 
     // ---------- 页签切换 ----------
@@ -157,6 +158,7 @@
     }
     tabPaste.onclick = function () { switchTab('paste'); };
     tabDb.onclick = function () { switchTab('db'); };
+    if (opts.defaultTab === 'db') switchTab('db');
 
     openModal('导入模型', wrap, [foot]);
   }

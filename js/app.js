@@ -350,6 +350,18 @@
   }
 
   // 管理项目：列出全部项目，支持行内改名与删除（无需切换当前项目）
+  // 结构对比流程：选连接 → 差异清单 → 勾选执行 ALTER（SQL 页按钮与「数据源」菜单共用）
+  function openDiffFlow() {
+    root.Materialize.pickConnection(function (conn) {
+      root.MatExt.openDiffPanel(conn.id);
+    }, '选择对比目标连接');
+  }
+
+  // 物化流程：打开物化向导（SQL 页按钮与「数据源」菜单共用）
+  function openMaterializeFlow() {
+    if (root.Materialize && root.Materialize.openMaterializeDialog) root.Materialize.openMaterializeDialog();
+  }
+
   function openManageProjects() {
     function rowHTML() {
       var cur = Store.projectId;
@@ -452,15 +464,8 @@
     document.getElementById('btn-do-gen').onclick = function () { genSQL(); };
     var btnMat = document.getElementById('btn-mat');
     var btnDiff = document.getElementById('btn-diff');
-    if (btnDiff) btnDiff.onclick = function () {
-      // 结构对比：选连接 → 差异清单 → 勾选执行 ALTER
-      root.Materialize.pickConnection(function (conn) {
-        root.MatExt.openDiffPanel(conn.id);
-      }, '选择对比目标连接');
-    };
-    if (btnMat) btnMat.onclick = function () {
-      if (root.Materialize && root.Materialize.openMaterializeDialog) root.Materialize.openMaterializeDialog();
-    };
+    if (btnDiff) btnDiff.onclick = openDiffFlow;
+    if (btnMat) btnMat.onclick = openMaterializeFlow;
     document.getElementById('btn-tpl').onclick = function () { Dialogs.openTemplateEditor(); };
     document.getElementById('btn-copy-sql').onclick = function () {
       var pre = document.getElementById('sql-output');
@@ -861,7 +866,27 @@
       }]);
     };
 
-    document.getElementById('btn-import').onclick = Dialogs.openImportSQL;
+    document.getElementById('btn-import').onclick = function () { Dialogs.openImportSQL({ defaultTab: 'paste' }); };
+    // ---- 顶栏三段菜单（项目管理 / 数据模型 / 数据源）----
+    function closeMenu(el) {
+      var d = el && el.closest ? el.closest('details') : null;
+      if (d) d.removeAttribute('open');
+    }
+    var btnNewProject = document.getElementById('btn-new-project');
+    if (btnNewProject) btnNewProject.onclick = function () { closeMenu(btnNewProject); openNewProject(); };
+    var btnManageProjects = document.getElementById('btn-manage-projects');
+    if (btnManageProjects) btnManageProjects.onclick = function () { closeMenu(btnManageProjects); openManageProjects(); };
+    var btnRename2 = document.getElementById('btn-rename-project');
+    if (btnRename2) {
+      var origRename = btnRename2.onclick;
+      btnRename2.onclick = function (e) { closeMenu(btnRename2); if (origRename) return origRename.call(this, e); };
+    }
+    var btnImportDb = document.getElementById('btn-import-db');
+    if (btnImportDb) btnImportDb.onclick = function () { closeMenu(btnImportDb); Dialogs.openImportSQL({ defaultTab: 'db' }); };
+    var btnMatEntry = document.getElementById('btn-mat-entry');
+    if (btnMatEntry) btnMatEntry.onclick = function () { closeMenu(btnMatEntry); switchTab('sql'); openMaterializeFlow(); };
+    var btnDiffEntry = document.getElementById('btn-diff-entry');
+    if (btnDiffEntry) btnDiffEntry.onclick = function () { closeMenu(btnDiffEntry); switchTab('sql'); openDiffFlow(); };
     document.getElementById('btn-gensql').onclick = function () { switchTab('sql'); };
     document.getElementById('btn-check').onclick = Dialogs.openCheck;
     document.getElementById('btn-dsh').onclick = Dialogs.openDSH;
