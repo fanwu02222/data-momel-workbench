@@ -442,6 +442,7 @@
     h.push('</select></label>');
     h.push('<button class="btn primary" id="btn-do-gen">⚙ 生成 SQL</button>');
     h.push('<button class="btn" id="btn-mat" title="把模型 DDL 物化到真实数据库（MySQL / PostgreSQL / Hive）">⚡ 物化到库</button>');
+    h.push('<button class="btn" id="btn-diff" title="对比当前项目模型与目标库的真实结构，生成可执行的 ALTER 同步语句">⇄ 结构对比</button>');
     h.push('<button class="btn" id="btn-tpl" title="编辑 SQL 生成模板">⌗ 模版</button>');
     h.push('<button class="btn" id="btn-copy-sql">复制</button>');
     h.push('<button class="btn" id="btn-dl-sql">下载 .sql</button>');
@@ -450,6 +451,13 @@
     pane.innerHTML = h.join('');
     document.getElementById('btn-do-gen').onclick = function () { genSQL(); };
     var btnMat = document.getElementById('btn-mat');
+    var btnDiff = document.getElementById('btn-diff');
+    if (btnDiff) btnDiff.onclick = function () {
+      // 结构对比：选连接 → 差异清单 → 勾选执行 ALTER
+      root.Materialize.pickConnection(function (conn) {
+        root.MatExt.openDiffPanel(conn.id);
+      }, '选择对比目标连接');
+    };
     if (btnMat) btnMat.onclick = function () {
       if (root.Materialize && root.Materialize.openMaterializeDialog) root.Materialize.openMaterializeDialog();
     };

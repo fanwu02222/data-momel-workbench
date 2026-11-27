@@ -360,6 +360,62 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ================= 差异同步 / 数据预览 =================
+	if p == "/api/diff" && r.Method == "POST" {
+		body, err := readBody(w, r)
+		if err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		var req struct {
+			ConnectionID int64        `json:"connectionId"`
+			Model        map[string]any `json:"model"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		if req.ConnectionID <= 0 || req.Model == nil {
+			sendJSON(w, 400, map[string]any{"error": "connectionId 与 model 不能为空"})
+			return
+		}
+		res, err := dbDiffTable(req.ConnectionID, req.Model)
+		if err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		sendJSON(w, 200, res)
+		return
+	}
+
+	if p == "/api/preview" && r.Method == "POST" {
+		body, err := readBody(w, r)
+		if err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		var req struct {
+			ConnectionID int64  `json:"connectionId"`
+			Table        string `json:"table"`
+			Limit        int    `json:"limit"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		if req.ConnectionID <= 0 || req.Table == "" {
+			sendJSON(w, 400, map[string]any{"error": "connectionId 与 table 不能为空"})
+			return
+		}
+		res, err := dbPreviewRows(req.ConnectionID, req.Table, req.Limit)
+		if err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		sendJSON(w, 200, map[string]any{"ok": true, "columns": res["columns"], "rows": res["rows"], "count": res["count"]})
+		return
+	}
+
 	// ================= OLTP → ODS 推送 =================
 	if p == "/api/push-to-ods" && r.Method == "POST" {
 		body, err := readBody(w, r)

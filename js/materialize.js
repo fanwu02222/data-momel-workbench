@@ -99,6 +99,30 @@
 
   // ================= 功能一：数据库连接管理 =================
   // opts.onClose：关闭弹窗后的回调（向导里跳转连接管理时用来返回向导）
+  // 表浏览器：列出该连接库中的全部表，可逐表预览数据
+  function openTableBrowser(c) {
+    var w = el('div');
+    w.innerHTML = '<div class="hint">读取表列表中…</div>';
+    root.Dialogs.openModal('浏览：' + c.name + '（' + c.database + '）', w, [{ label: '关闭' }]);
+    api.tables(c.id).then(function (tables) {
+      var h = '<p class="hint small">' + tables.length + ' 张表</p><div class="tb-list">';
+      tables.forEach(function (t) {
+        h += '<div class="tb-row"><span class="mono tb-name">' + esc(t.name) + '</span>' +
+          '<span class="hint tb-comment">' + esc(t.comment || '') + '</span>' +
+          '<button class="btn small" data-peek="' + esc(t.name) + '">预览</button></div>';
+      });
+      h += '</div>';
+      w.innerHTML = h;
+      w.querySelectorAll('[data-peek]').forEach(function (b) {
+        b.onclick = function () {
+          root.MatExt.openPreviewPanel(c.id, b.getAttribute('data-peek'), 100);
+        };
+      });
+    }).catch(function (e) {
+      w.innerHTML = '<div class="warn-box">❌ ' + esc(e.message) + '</div>';
+    });
+  }
+
   function openConnectionsDialog(opts) {
     opts = opts || {};
     var Dialogs = root.Dialogs;
@@ -161,6 +185,10 @@
         var btnTest = el('button', 'btn small');
         btnTest.textContent = '测试';
         btnTest.onclick = function () { runTest(row, c.id, c); };
+        var btnPeek = el('button', 'btn small');
+        btnPeek.textContent = '浏览';
+        btnPeek.title = '浏览该库的表并预览数据';
+        btnPeek.onclick = function () { openTableBrowser(c); };
         var btnDel = el('button', 'btn small danger');
         btnDel.textContent = '删除';
         btnDel.onclick = function () {
@@ -170,7 +198,7 @@
             loadList();
           }).catch(function (e) { root.Dialogs.toast('删除失败：' + e.message, true); });
         };
-        acts.appendChild(btnTest); acts.appendChild(btnDel);
+        acts.appendChild(btnTest); acts.appendChild(btnPeek); acts.appendChild(btnDel);
         listBox.appendChild(row);
         if (testId && c.id === testId) runTest(row, c.id, c); // 新建后自动测试
       });
@@ -685,6 +713,35 @@
 
   function connBadge(kind) { return '<span class="kind-badge ' + esc(kind) + '">' + esc(kindLabel(kind)) + '</span>'; }
 
+  // pickConnection(cb, title)：弹小窗选择一个连接（物化/对比共用）
+  function pickConnection(cb, title) {
+    var conns = [];
+    api.list().then(function (list) {
+      conns = list || [];
+      var w = document.createElement('div');
+      if (!conns.length) {
+        w.innerHTML = '<p>暂无数据库连接，先在 ⋯ 菜单「数据库连接」中创建。</p>';
+        Dialogs.openModal(title || '选择连接', w, [{ label: '关闭' }]);
+        return;
+      }
+      var h = '<div class="conn-pick-list">';
+      conns.forEach(function (c) {
+        h += '<button class="btn conn-pick-item" data-cid="' + c.id + '">' + connBadge(c.kind) + esc(c.name) +
+          '<span class="hint">' + esc(c.host + ':' + c.port + '/' + c.database) + '</span></button>';
+      });
+      h += '</div>';
+      w.innerHTML = h;
+      Dialogs.openModal(title || '选择连接', w, [{ label: '取消' }]);
+      w.querySelectorAll('.conn-pick-item').forEach(function (b) {
+        b.onclick = function () {
+          var id = parseInt(b.dataset.cid, 10);
+          Dialogs.closeModal();
+          cb(conns.filter(function (c) { return c.id === id; })[0]);
+        };
+      });
+    });
+  }
+
   root.Materialize = {
     KINDS: KINDS,
     api: api,
@@ -692,6 +749,7 @@
     openMaterializeDialog: openMaterializeDialog,
     buildDbImportPane: buildDbImportPane,
     buildStatements: buildStatements,
-    tableToModel: tableToModel
+    tableToModel: tableToModel,
+    pickConnection: pickConnection
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
