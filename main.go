@@ -145,6 +145,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "GET":
 			migrateIfNeeded()
+			ensureConnTable()
 			data, ok := dbGetProjectID(projectID)
 			if !ok {
 				sendJSON(w, 404, map[string]any{"error": "项目尚未初始化"})
@@ -197,6 +198,165 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sendJSON(w, 200, result)
+		return
+	}
+
+	// ================= 数据库连接 / 物化 / 反向拉取 =================
+	if p == "/api/connections" {
+		switch r.Method {
+		case "GET":
+			sendJSON(w, 200, map[string]any{"connections": dbListConnections()})
+		case "POST":
+			body, err := readBody(w, r)
+			if err != nil {
+				sendJSON(w, 400, map[string]any{"error": err.Error()})
+				return
+			}
+			var c dbConn
+			if err := json.Unmarshal(body, &c); err != nil {
+				sendJSON(w, 400, map[string]any{"error": err.Error()})
+				return
+			}
+			if c.Name == "" || c.Kind == "" {
+				sendJSON(w, 400, map[string]any{"error": "name 与 kind 不能为空"})
+				return
+			}
+			if c.Kind != "mysql" && c.Kind != "postgresql" && c.Kind != "hive" {
+				sendJSON(w, 400, map[string]any{"error": "kind 必须为 mysql / postgresql / hive"})
+				return
+			}
+			if c.Host == "" {
+				c.Host = "127.0.0.1"
+			}
+			created, err := dbCreateConnection(c)
+			if err != nil {
+				sendJSON(w, 400, map[string]any{"error": err.Error()})
+				return
+			}
+			created.Password = ""
+			sendJSON(w, 200, map[string]any{"ok": true, "connection": created})
+		default:
+			sendJSON(w, 405, map[string]any{"error": "method not allowed"})
+		}
+		return
+	}
+
+	if p == "/api/connections/test" && r.Method == "POST" {
+		body, err := readBody(w, r)
+		if err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		var req struct {
+			ID int64  `json:"id"`
+			C  dbConn `json:"connection"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		c := req.C
+		if req.ID > 0 { // 测已保存的连接
+			saved, err := dbGetConnection(req.ID)
+			if err != nil {
+				sendJSON(w, 404, map[string]any{"error": "连接不存在"})
+				return
+			}
+			c = saved
+		}
+		c.Port = defaultPort(c.Kind, c.Port)
+		ver, err := testConnection(c)
+		if err != nil {
+			sendJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		sendJSON(w, 200, map[string]any{"ok": true, "version": ver})
+		return
+	}
+
+	if strings.HasPrefix(p, "/api/connections/") && r.Method == "DELETE" {
+		idStr := strings.TrimPrefix(p, "/api/connections/")
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil || id <= 0 {
+			sendJSON(w, 400, map[string]any{"error": "无效的连接 id"})
+			return
+		}
+		if err := dbDeleteConnection(id); err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		sendJSON(w, 200, map[string]any{"ok": true})
+		return
+	}
+
+	if p == "/api/materialize" && r.Method == "POST" {
+		body, err := readBody(w, r)
+		if err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		var req struct {
+			ConnectionID int64     `json:"connectionId"`
+			Statements   []matStmt `json:"statements"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		if req.ConnectionID <= 0 || len(req.Statements) == 0 {
+			sendJSON(w, 400, map[string]any{"error": "connectionId 与 statements 不能为空"})
+			return
+		}
+		sendJSON(w, 200, map[string]any{"ok": true, "results": dbMaterialize(req.ConnectionID, req.Statements)})
+		return
+	}
+
+	if p == "/api/introspect" && r.Method == "POST" {
+		body, err := readBody(w, r)
+		if err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		var req struct {
+			ConnectionID int64 `json:"connectionId"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		tables, err := dbIntrospectTables(req.ConnectionID)
+		if err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		sendJSON(w, 200, map[string]any{"ok": true, "tables": tables})
+		return
+	}
+
+	if p == "/api/introspect/detail" && r.Method == "POST" {
+		body, err := readBody(w, r)
+		if err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		var req struct {
+			ConnectionID int64    `json:"connectionId"`
+			Tables       []string `json:"tables"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		if req.ConnectionID <= 0 || len(req.Tables) == 0 {
+			sendJSON(w, 400, map[string]any{"error": "connectionId 与 tables 不能为空"})
+			return
+		}
+		detail, err := dbIntrospectDetail(req.ConnectionID, req.Tables)
+		if err != nil {
+			sendJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		sendJSON(w, 200, map[string]any{"ok": true, "tables": detail})
 		return
 	}
 
@@ -508,6 +668,7 @@ func main() {
 		fatalErr("数据库打开失败", err)
 	}
 	migrateIfNeeded()
+	ensureConnTable()
 
 	port := os.Getenv("PORT")
 	if port == "" {

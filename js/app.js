@@ -441,6 +441,7 @@
     });
     h.push('</select></label>');
     h.push('<button class="btn primary" id="btn-do-gen">⚙ 生成 SQL</button>');
+    h.push('<button class="btn" id="btn-mat" title="把模型 DDL 物化到真实数据库（MySQL / PostgreSQL / Hive）">⚡ 物化到库</button>');
     h.push('<button class="btn" id="btn-tpl" title="编辑 SQL 生成模板">⌗ 模版</button>');
     h.push('<button class="btn" id="btn-copy-sql">复制</button>');
     h.push('<button class="btn" id="btn-dl-sql">下载 .sql</button>');
@@ -448,6 +449,10 @@
     h.push('<div class="sql-output-wrap"><pre id="sql-output" class="mono sql-output"><span class="hint-line">点击「生成 SQL」查看脚本…</span></pre></div>');
     pane.innerHTML = h.join('');
     document.getElementById('btn-do-gen').onclick = function () { genSQL(); };
+    var btnMat = document.getElementById('btn-mat');
+    if (btnMat) btnMat.onclick = function () {
+      if (root.Materialize && root.Materialize.openMaterializeDialog) root.Materialize.openMaterializeDialog();
+    };
     document.getElementById('btn-tpl').onclick = function () { Dialogs.openTemplateEditor(); };
     document.getElementById('btn-copy-sql').onclick = function () {
       var pre = document.getElementById('sql-output');
@@ -766,6 +771,12 @@
     };
     document.getElementById('btn-import-json').onclick = Dialogs.importJSON;
     document.getElementById('btn-import-excel').onclick = Dialogs.importExcel;
+    var btnDbConn = document.getElementById('btn-db-connections');
+    if (btnDbConn) btnDbConn.onclick = function () {
+      var menu = btnDbConn.closest('details');
+      if (menu) menu.removeAttribute('open'); // 菜单不遮挡弹窗
+      if (root.Materialize && root.Materialize.openConnectionsDialog) root.Materialize.openConnectionsDialog();
+    };
     var btnSampleOltp = document.getElementById('btn-sample-oltp');
     if (btnSampleOltp) btnSampleOltp.onclick = function () {
       Dialogs.openModal('加载 OLTP 示例（业务库）', (function () {

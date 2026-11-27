@@ -63,18 +63,50 @@
     setTimeout(function () { t.classList.remove('show'); setTimeout(function () { t.remove(); }, 300); }, 2600);
   }
 
-  // ================= SQL 导入（反解析） =================
+  // ================= SQL 导入（粘贴 SQL / 从数据库导入 双页签） =================
   function openImportSQL() {
     var wrap = el('div', 'import-dialog');
+
+    // ---------- 页签切换 ----------
+    var tabbar = el('div', 'seg import-tabs');
+    var tabPaste = el('button', 'seg-btn active');
+    tabPaste.textContent = '粘贴 SQL';
+    var tabDb = el('button', 'seg-btn');
+    tabDb.textContent = '从数据库导入';
+    tabbar.appendChild(tabPaste);
+    tabbar.appendChild(tabDb);
+    wrap.appendChild(tabbar);
+
+    // 两个页签各自的底部按钮容器（切换时联动显隐）
+    var footPaste = el('div', 'foot-actions');
+    var footDb = el('div', 'foot-actions');
+    footDb.style.display = 'none';
+    var foot = el('div');
+    foot.appendChild(footPaste);
+    foot.appendChild(footDb);
+
+    // ---------- 页签一：粘贴 SQL（原有功能） ----------
+    var panePaste = el('div');
     var intro = el('p', 'hint',
       '粘贴 <b>CREATE TABLE</b>（含字段/注释/分区）、<b>CREATE TABLE ... AS SELECT</b> 或 <b>INSERT INTO/OVERWRITE ... SELECT</b> 语句，<br>工作台将反解析为数仓模型（自动识别分层、字段、业务逻辑与血缘）。支持一次粘贴多条语句。');
-    wrap.appendChild(intro);
+    panePaste.appendChild(intro);
     var ta = el('textarea', 'sql-input mono');
     ta.rows = 12;
     ta.placeholder = "CREATE TABLE IF NOT EXISTS dwd_order_info_di (\n  `order_id` BIGINT COMMENT '订单ID',\n  ...\n) COMMENT '订单明细事实表'\nPARTITIONED BY (`dt` STRING)\nAS SELECT ...;\n\nINSERT OVERWRITE TABLE dws_trade_shop_order_1d PARTITION (dt)\nSELECT o.shop_id, count(1) AS order_count, ...\nFROM dwd_order_info_di o GROUP BY o.shop_id, o.dt;";
-    wrap.appendChild(ta);
+    panePaste.appendChild(ta);
     var previewBox = el('div', 'import-preview');
-    wrap.appendChild(previewBox);
+    panePaste.appendChild(previewBox);
+    wrap.appendChild(panePaste);
+
+    // ---------- 页签二：从数据库导入 ----------
+    var paneDb = el('div');
+    paneDb.style.display = 'none';
+    if (root.Materialize && root.Materialize.buildDbImportPane) {
+      paneDb.appendChild(root.Materialize.buildDbImportPane(footDb));
+    } else {
+      paneDb.appendChild(el('p', 'hint', '从数据库导入组件加载失败（js/materialize.js 未引入）。'));
+    }
+    wrap.appendChild(paneDb);
 
     var parsed = null;
     var btnParse = el('button', 'btn');
@@ -111,7 +143,22 @@
       App.refresh();
       toast('导入完成：新建 ' + created + '、覆盖 ' + replaced + (skipped ? '、跳过 ' + skipped : ''));
     };
-    openModal('SQL 反解析导入', wrap, [btnParse, btnImport]);
+    footPaste.appendChild(btnParse);
+    footPaste.appendChild(btnImport);
+
+    function switchTab(which) {
+      var isPaste = which === 'paste';
+      tabPaste.classList.toggle('active', isPaste);
+      tabDb.classList.toggle('active', !isPaste);
+      panePaste.style.display = isPaste ? '' : 'none';
+      paneDb.style.display = isPaste ? 'none' : '';
+      footPaste.style.display = isPaste ? '' : 'none';
+      footDb.style.display = isPaste ? 'none' : '';
+    }
+    tabPaste.onclick = function () { switchTab('paste'); };
+    tabDb.onclick = function () { switchTab('db'); };
+
+    openModal('导入模型', wrap, [foot]);
   }
 
   function renderPreview(box, parsed) {
