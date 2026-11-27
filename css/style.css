@@ -1076,3 +1076,17 @@ body.oltp .layer-legend { display: none; }
   color: var(--text-3); font-size: 11px; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* ============ ER 画布快速建模 ============ */
+.er-inline-input {
+  width: 100%; height: 20px; border: 1px solid var(--accent); border-radius: 4px;
+  background: var(--panel); color: var(--text); font-size: 12px; font-weight: 600;
+  padding: 0 6px; outline: none; font-family: var(--mono);
+}
+.er-add-field:hover { fill: var(--accent); }
+.er-box-del, .er-field-del { paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
+.er-box-del:hover, .er-field-del:hover { fill: var(--danger); }
+.fe-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+.fe-grid label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-3); }
+.fe-grid label.fe-inline { flex-direction: row; align-items: center; gap: 6px; color: var(--text-2); font-size: 12px; }
+.fe-grid .col-input { height: 26px; }

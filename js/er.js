@@ -98,6 +98,73 @@
     return pos;
   }
 
+  // ---- 画布快速建模辅助（行内编辑 / 快捷删除）----
+  // 行内改名：双击标题 → foreignObject 嵌 HTML input
+  function attachTitleEdit(svg, box, titleEl, m, opts) {
+    titleEl.addEventListener('dblclick', function (e) {
+      e.stopPropagation(); e.preventDefault();
+      box._skipClick = true;
+      var H = 20;
+      var fo = svgEl('foreignObject', { x: 6, y: 6, width: BOX_W - 40, height: H, style: 'overflow:visible' });
+      var input = document.createElement('input');
+      input.value = m.name || '';
+      input.className = 'er-inline-input';
+      input.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+      input.addEventListener('dblclick', function (ev) { ev.stopPropagation(); });
+      fo.appendChild(input);
+      box.appendChild(fo);
+      input.focus(); input.select();
+      var done = false;
+      function commit() {
+        if (done) return; done = true;
+        var v = input.value.trim();
+        fo.remove();
+        if (v && v !== m.name) opts.onRenameModel(m, v);
+      }
+      input.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+        else if (ev.key === 'Escape') { done = true; fo.remove(); }
+        ev.stopPropagation();
+      });
+      input.addEventListener('blur', commit);
+    });
+  }
+
+  // 实体标题 hover ✕：删除实体
+  function attachBoxDelete(svg, box, m, opts) {
+    var del = svgEl('text', { x: BOX_W - 14, y: 15, 'font-size': 11, 'text-anchor': 'middle', style: 'fill:var(--danger);display:none;cursor:pointer', class: 'er-box-del' });
+    del.textContent = '✕';
+    del.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+    del.addEventListener('click', function (e) { e.stopPropagation(); opts.onDeleteModel(m); });
+    box.appendChild(del);
+    box.addEventListener('mouseenter', function () { del.style.display = ''; });
+    box.addEventListener('mouseleave', function () { del.style.display = 'none'; });
+  }
+
+  // 字段行 hover ✕：删除字段
+  function attachFieldDelete(svg, box, f, ry, m, opts) {
+    var del = svgEl('text', { x: BOX_W - 14, y: ry, 'font-size': 10, 'text-anchor': 'middle', style: 'fill:var(--danger);display:none;cursor:pointer', class: 'er-field-del' });
+    del.textContent = '✕';
+    del.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+    del.addEventListener('click', function (e) { e.stopPropagation(); opts.onDeleteField(m, f); });
+    box.appendChild(del);
+    // 用一个透明的 hover 命中条（覆盖字段行宽）
+    var hit = svgEl('rect', { x: 0, y: ry - 12, width: BOX_W, height: ROW_H, style: 'fill:transparent', 'pointer-events': 'all', class: 'er-row-hit' });
+    hit.addEventListener('mouseenter', function () { del.style.display = ''; });
+    hit.addEventListener('mouseleave', function () { del.style.display = 'none'; });
+    box.appendChild(hit);
+  }
+
+  // 字段行编辑浮层（HTML）：名称/类型/注释/PK —— 由 app.js 的 onEditField hook 弹出，
+  // er.js 只负责把事件传出去；此处提供坐标换算帮助函数
+  function fieldScreenPos(svg, box, f) {
+    var idx = ((box.__erModel.fields || []).indexOf(f));
+    var y = (idx >= 0 ? HEADER_H + idx * ROW_H + ROW_H / 2 + 2 : HEADER_H / 2);
+    var r = box.getBoundingClientRect();
+    var view = svg._getView ? svg._getView() : { s: 1, x: 0, y: 0 };
+    return { x: r.x - view.x + 30, y: r.y + y * view.s + 4, w: r.width };
+  }
+
   // ---- 字段拖拽建关系 ----
   // 从字段行按下拖动：临时虚线跟随鼠标；释放在目标字段行/实体头上 → 弹基数选择
   function attachFieldDrag(svg, box, t, model, field) {
@@ -208,7 +275,7 @@
 
   /**
    * 渲染 ER 图到容器
-   * opts: { getLayout, saveLayout, onSelectModel }
+   * opts: { getLayout, saveLayout, onSelectModel, onQuickCreate, onRenameModel, onEditField, onDeleteField, onDeleteModel }
    */
   function renderER(container, project, opts) {
     opts = opts || {};
@@ -392,19 +459,35 @@
       box.appendChild(svgEl_('rect', { width: BOX_W, height: boxH(m), rx: 8, style: 'fill:var(--panel);stroke:var(--line-2)', 'stroke-width': 1.2, class: 'er-box-body' }));
       box.appendChild(svgEl_('rect', { width: BOX_W, height: HEADER_H, rx: 8, style: 'fill:var(--panel-3)', class: 'er-box-head' }));
       box.appendChild(svgEl_('rect', { width: BOX_W, height: 12, y: HEADER_H - 12, style: 'fill:var(--panel-3)' }));
-      var title = svgEl_('text', { x: 11, y: 15, 'font-size': 12, 'font-weight': 700, style: 'fill:var(--text)', class: 'er-title' });
+      var title = svgEl_('text', { x: 11, y: 15, 'font-size': 12, 'font-weight': 700, style: 'fill:var(--text)', class: 'er-title', 'data-role': 'title', cursor: 'text' });
       title.textContent = m.name || '（未命名实体）';
+      // 标题双击 → 行内改名
+      if (opts.onRenameModel) attachTitleEdit(svg, box, title, m, opts);
       box.appendChild(title);
       if (m.cnName) {
         var cn = svgEl_('text', { x: 11, y: 28, 'font-size': 10, style: 'fill:var(--text-3)' });
         cn.textContent = m.cnName;
         box.appendChild(cn);
       }
+      // 标题 hover ✕ 删除实体
+      if (opts.onDeleteModel) attachBoxDelete(svg, box, m, opts);
       var fields = m.fields || [];
       if (!fields.length) {
         var empty = svgEl_('text', { x: 11, y: HEADER_H + 15, 'font-size': 10.5, style: 'fill:var(--text-faint)' });
         empty.textContent = '（暂无字段）';
         box.appendChild(empty);
+      }
+      // 底部「＋ 添加字段」行：点击追加字段并进入行内编辑
+      if (opts.onEditField) {
+        var addY = HEADER_H + Math.max(1, fields.length) * ROW_H + ROW_H / 2 + 2;
+        var addRow = svgEl_('text', { x: 11, y: addY, 'font-size': 10.5, style: 'fill:var(--text-faint)', cursor: 'copy', class: 'er-add-field', 'data-role': 'add-field' });
+        addRow.textContent = '＋ 添加字段';
+        addRow.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+        addRow.addEventListener('click', function (e) {
+          e.stopPropagation();
+          opts.onEditField(m, null); // null = 新字段
+        });
+        box.appendChild(addRow);
       }
       fields.forEach(function (f, i) {
         var ry = HEADER_H + i * ROW_H + ROW_H / 2 + 2;
@@ -413,6 +496,16 @@
         if (f.fk) marks += '🔗';
         var t = svgEl_('text', { x: 11, y: ry, 'font-size': 11, class: 'ln-field er-field', style: 'fill:var(--text-2)', 'data-field': f.name || '', cursor: 'crosshair' });
         t.textContent = (marks ? marks + ' ' : '') + (f.name || '（空）');
+        // 字段行双击 → 行内编辑
+        if (opts.onEditField) {
+          t.addEventListener('dblclick', function (e) {
+            e.stopPropagation(); e.preventDefault();
+            opts.onEditField(m, f);
+          });
+          t.addEventListener('mousedown', function (e) { if (e.detail > 1) e.stopPropagation(); });
+        }
+        // 字段行 hover ✕ 删除（fk 一并删）
+        if (opts.onDeleteField) attachFieldDelete(svg, box, f, ry, m, opts);
         box.appendChild(t);
         var ty = svgEl_('text', { x: BOX_W - 11, y: ry, 'font-size': 9.5, 'text-anchor': 'end', class: 'er-ftype', style: 'fill:var(--text-faint)', 'pointer-events': 'none' });
         ty.textContent = f.type || '';
@@ -450,6 +543,19 @@
     });
 
     attachPanZoom(svg, g, totalW, totalH);
+
+    // 画布空白处双击 → 快速新建实体（落点=双击位置）
+    if (opts.onQuickCreate) {
+      svg.addEventListener('dblclick', function (e) {
+        if (e.target.closest && e.target.closest('.er-box')) return; // 实体内双击交给行内编辑
+        var view = (typeof svg._getView === 'function' && svg._getView()) || { x: 0, y: 0, s: 1 };
+        var r = svg.getBoundingClientRect();
+        var x = (e.clientX - r.left - view.x) / view.s - BOX_W / 2;
+        var y = (e.clientY - r.top - view.y) / view.s - HEADER_H / 2;
+        opts.onQuickCreate(Math.round(x), Math.round(y));
+      });
+    }
+
     return {
       warnings: warnings,
       entityCount: models.length,
@@ -458,5 +564,5 @@
     };
   }
 
-  return { renderER: renderER, computeEdges: computeEdges, parseFk: parseFk };
+  return { renderER: renderER, computeEdges: computeEdges, parseFk: parseFk, fieldScreenPos: fieldScreenPos };
 });

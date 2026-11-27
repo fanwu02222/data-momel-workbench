@@ -485,6 +485,71 @@
     pre.innerHTML = highlightSQL(sql);
   }
 
+  // ER 画布：字段行内编辑浮层（新建 f=null / 编辑现有 f）
+  function openFieldQuickEdit(m, f) {
+    var isNew = !f;
+    if (isNew) {
+      f = { name: '', type: 'varchar(64)', comment: '' };
+      m.fields = m.fields || [];
+      m.fields.push(f);
+    }
+    var oldEl = document.getElementById('er-field-edit');
+    if (oldEl) oldEl.remove();
+    var layer = document.createElement('div');
+    layer.id = 'er-field-edit';
+    layer.style.cssText = 'position:fixed;z-index:9999;background:var(--panel);border:1px solid var(--line-2);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.2);padding:10px 12px;width:300px;font-size:12px';
+    layer.innerHTML =
+      '<div style="font-weight:600;margin-bottom:6px">' + esc(m.name || '?') + ' · ' + (isNew ? '新字段' : esc(f.name)) + '</div>' +
+      '<div class="fe-grid">' +
+      '<label>名称<input id="fe-name" class="col-input" value="' + esc(f.name) + '" placeholder="field_name"></label>' +
+      '<label>类型<input id="fe-type" class="col-input mono" value="' + esc(f.type) + '" placeholder="varchar(64)"></label>' +
+      '<label>注释<input id="fe-comment" class="col-input" value="' + esc(f.comment || '') + '"></label>' +
+      '<label class="fe-inline"><input type="checkbox" id="fe-pk"' + (f.pk ? ' checked' : '') + '>主键</label>' +
+      '<label class="fe-inline"><input type="checkbox" id="fe-nullable"' + (f.nullable === false ? ' checked' : '') + '>非空</label>' +
+      '<label class="fe-inline"><input type="checkbox" id="fe-unique"' + (f.unique ? ' checked' : '') + '>唯一</label>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;margin-top:8px;justify-content:flex-end">' +
+      '<button class="btn small" data-fe="cancel">取消</button>' +
+      '<button class="btn small primary" data-fe="save">保存</button></div>';
+    document.body.appendChild(layer);
+    layer.style.left = Math.min(window.innerWidth - 320, 80) + 'px';
+    layer.style.top = Math.min(window.innerHeight - 220, 120) + 'px';
+    var nameInput = layer.querySelector('#fe-name');
+    nameInput.focus();
+    function close() { layer.remove(); document.removeEventListener('mousedown', onDoc, true); }
+    function onDoc(e) { if (!layer.contains(e.target)) close(); }
+    document.addEventListener('mousedown', onDoc, true);
+    layer.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+    layer.addEventListener('keydown', function (e) { e.stopPropagation(); });
+    function save() {
+      var name = nameInput.value.trim();
+      if (!name) { Dialogs.toast('字段名不能为空', true); return; }
+      var dup = (m.fields || []).some(function (x) { return x !== f && x.name === name; });
+      if (dup) { Dialogs.toast('同实体已有同名字段：' + name, true); return; }
+      f.name = name;
+      f.type = layer.querySelector('#fe-type').value.trim() || 'string';
+      f.comment = layer.querySelector('#fe-comment').value.trim();
+      f.pk = layer.querySelector('#fe-pk').checked;
+      if (layer.querySelector('#fe-nullable').checked) f.nullable = false; else delete f.nullable;
+      if (layer.querySelector('#fe-unique').checked) f.unique = true; else delete f.unique;
+      if (f.pk) { delete f.nullable; delete f.unique; }
+      Store.flushSave().catch(function () { });
+      close();
+      renderLineagePane(); renderCatalogView();
+      Dialogs.toast((isNew ? '已添加字段 ' : '已更新字段 ') + name);
+    }
+    layer.addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-fe]');
+      if (!b) return;
+      if (b.dataset.fe === 'save') save();
+      else close();
+    });
+    layer.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); save(); }
+      if (e.key === 'Escape') close();
+    });
+  }
+
   // ---------- 血缘页 / ER 模型图页 ----------
   function renderLineagePane() {
     var pane = document.getElementById('pane-lineage');
@@ -552,6 +617,43 @@
             renderCatalogView();
             Dialogs.toast('已删除关系');
         }
+  ,
+        // ---- ER 画布快速建模 ----
+        onQuickCreate: function (x, y) {
+          var name = 'entity_' + Date.now().toString(36).slice(-4);
+          var m = Store.newModel('entity');
+          m.name = name;
+          m.fields = [{ name: 'id', type: 'bigint', comment: '主键', pk: true, nullable: false }];
+          var lay = Store.project.layout || (Store.project.layout = {});
+          lay[m.id] = { x: Math.max(0, x), y: Math.max(0, y) };
+          Store.flushSave().catch(function () { });
+          renderLineagePane();
+          Dialogs.toast('已创建实体「' + name + '」，双击标题改名、拖字段建关系');
+        },
+        onRenameModel: function (m, v) {
+          var dup = Store.getModels().some(function (x) { return x !== m && x.name === v; });
+          if (dup) { Dialogs.toast('已存在同名实体：' + v, true); return; }
+          m.name = v;
+          Store.flushSave().catch(function () { });
+          renderLineagePane(); renderSidebar(); renderCatalogView();
+          Dialogs.toast('已改名「' + v + '」');
+        },
+        onEditField: function (m, f) { openFieldQuickEdit(m, f); },
+        onDeleteField: function (m, f) {
+          if (!confirm('删除字段 ' + (m.name || '?') + '.' + (f.name || '?') + (f.fk ? '（外键关系一并删除）' : '') + '？')) return;
+          m.fields = (m.fields || []).filter(function (x) { return x !== f; });
+          Store.flushSave().catch(function () { });
+          renderLineagePane(); renderCatalogView();
+          Dialogs.toast('已删除字段 ' + (f.name || ''));
+        },
+        onDeleteModel: function (m) {
+          if (!confirm('删除实体「' + (m.name || '?') + '」及其 ' + (m.fields || []).length + ' 个字段？')) return;
+          Store.deleteModel(m.id);
+          if (Store.project.layout) delete Store.project.layout[m.id];
+          Store.flushSave().catch(function () { });
+          renderLineagePane(); renderSidebar(); renderCatalogView();
+          Dialogs.toast('已删除实体「' + (m.name || '') + '」');
+        }
       };
       var r = root.ER.renderER(canvas, Store.project, {
         catalog: Store.catalog,
@@ -562,7 +664,13 @@
           renderSidebar();
           renderCatalogView();
           switchTab('model');
-        }
+        },
+        // 画布快速建模（hooks 与 ER_HOOKS 同源，拖关系等旧交互也走 ER_HOOKS）
+        onQuickCreate: root.ER_HOOKS.onQuickCreate,
+        onRenameModel: root.ER_HOOKS.onRenameModel,
+        onEditField: root.ER_HOOKS.onEditField,
+        onDeleteField: root.ER_HOOKS.onDeleteField,
+        onDeleteModel: root.ER_HOOKS.onDeleteModel
       });
       warnBox.innerHTML = (r.warnings || []).length
         ? '<div class="warn-box">⚠ ' + r.warnings.map(esc).join('<br>⚠ ') + '</div>'
